@@ -1,0 +1,10 @@
+.idea/
+.m2/
+*.iml
+source/**/target/
+runtime/
+*.log
+*.part
+*.tmp
+statics/results/*.csv
+!statics/results/.gitkeep
