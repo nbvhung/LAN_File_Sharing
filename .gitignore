@@ -1,10 +1,33 @@
+# Local IDE settings
 .idea/
-.m2/
 *.iml
-source/**/target/
+.classpath
+.project
+.settings/
+
+# Maven output/cache and compiled Java files
+.m2/
+target/
+*.class
+*.hprof
+
+# Runtime data and incomplete transfers
 runtime/
 *.log
 *.part
 *.tmp
-statics/results/*.csv
-!statics/results/.gitkeep
+
+# Local environment values (keep example configuration trackable)
+.env
+.env.*
+!.env.example
+
+# Editor/OS temporary files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Keep statics/results/*.csv trackable: real measurements are submission evidence.

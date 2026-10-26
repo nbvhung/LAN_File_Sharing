@@ -21,7 +21,9 @@ Mỗi module có `pom.xml`, `src/main/java`, `src/test/java`. File chạy thực
 
 ## Build
 
-Yêu cầu JDK 21+ và Maven 3.9+. Từ thư mục project, trong PowerShell chạy `./build.ps1 validate`, `./build.ps1 test` hoặc `./build.ps1 package`. Script đặt Maven repository tại `.m2/repository` trong project; thư mục này đã được bỏ qua bởi Git. Có thể chạy trực tiếp từ `source/` bằng `mvn "-Dmaven.repo.local=../.m2/repository" validate`. Khung hiện chỉ khai báo module và hợp đồng; chưa có ứng dụng chạy được.
+Yêu cầu JDK 21+ và Maven 3.9+. Từ thư mục project, trong PowerShell chạy `./build.ps1 validate`, `./build.ps1 test` hoặc `./build.ps1 package`. Script đặt Maven repository tại `.m2/repository` trong project; thư mục này đã được bỏ qua bởi Git. Có thể chạy trực tiếp từ `source/` bằng `mvn "-Dmaven.repo.local=../.m2/repository" validate`. Hiện có codec chung và service truyền file phía server; chưa có ứng dụng TCP/Swing chạy hoàn chỉnh.
+
+Phần TV2 đã có service lưu trữ/upload/download/resume và kiểm thử độc lập; xem [README server](source/server/README.md) và [bàn giao TV2](docs/tv2-handoff.md). TCP dispatcher, client và discovery vẫn cần được triển khai/tích hợp bởi các thành viên phụ trách.
 
 Lần chạy `test/package` đầu tiên cần truy cập Maven Central để tải plugin và thư viện. Nếu mạng hiện tại chặn Maven Central, chạy trên máy có Internet hoặc cấu hình mirror Maven được phép sử dụng; sau khi cache đủ dependency có thể build offline.
 
