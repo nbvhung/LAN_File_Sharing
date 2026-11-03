@@ -21,7 +21,7 @@ Mỗi module có `pom.xml`, `src/main/java`, `src/test/java`. File chạy thực
 
 ## Build
 
-Yêu cầu JDK 21+ và Maven 3.9+. Từ thư mục project, trong PowerShell chạy `./build.ps1 validate`, `./build.ps1 test` hoặc `./build.ps1 package`. Script đặt Maven repository tại `.m2/repository` trong project; thư mục này đã được bỏ qua bởi Git. Có thể chạy trực tiếp từ `source/` bằng `mvn "-Dmaven.repo.local=../.m2/repository" validate`. Khung hiện chỉ khai báo module và hợp đồng; chưa có ứng dụng chạy được.
+Yêu cầu JDK 21+ và Maven 3.9+. Từ thư mục project, trong PowerShell chạy `./build.ps1 validate`, `./build.ps1 test` hoặc `./build.ps1 package`. Script đặt Maven repository tại `.m2/repository` trong project; thư mục này đã được bỏ qua bởi Git. Có thể chạy trực tiếp từ `source/` bằng `mvn "-Dmaven.repo.local=../.m2/repository" validate`. Đã có TCP server skeleton và LIST_FILES; truyền file và Swing chờ TV2/TV3 triển khai.
 
 Lần chạy `test/package` đầu tiên cần truy cập Maven Central để tải plugin và thư viện. Nếu mạng hiện tại chặn Maven Central, chạy trên máy có Internet hoặc cấu hình mirror Maven được phép sử dụng; sau khi cache đủ dependency có thể build offline.
 
@@ -41,3 +41,35 @@ Xem [giao thức v1](docs/protocol.md) và [review đề tài](docs/review.md). 
 ## Nghiệm thu dự kiến
 
 File 1/10/100 MB; 1/4/8 client; hash khớp; ngắt rồi resume; IP sai, timeout, file không tồn tại, frame lỗi; Swing không treo. Ghi số đo thực tế trong `statics/results/`.
+
+## Chạy TCP server (TV1)
+
+```powershell
+.\build.ps1 package
+.\run-server.ps1
+# Hoặc chỉ lắng nghe trên máy local:
+.\run-server.ps1 -Port 49000 -BindAddress 127.0.0.1
+```
+
+Dừng bằng Ctrl+C. Server hiện trả danh sách rỗng và báo transfer service chưa được cài; chưa truyền file. Test `TcpServerTest` gửi LIST_FILES bằng socket thật với bốn kết nối và kiểm tra server tiếp tục hoạt động sau frame lỗi.
+
+Hợp đồng triển khai cho TV2/TV3: [docs/tv1-api.md](docs/tv1-api.md).
+
+
+## Phase 1: TCP client kh?ng giao di?n
+
+Build to?n b? module: `./build.ps1 compile test package`.
+M? hai c?a s? PowerShell t?i th? m?c repository:
+
+```powershell
+# C?a s? 1; m?c ??nh bind 0.0.0.0:49000, d?ng b?ng Ctrl+C
+./run-server.ps1
+# C?a s? 2
+./run-client.ps1 -ServerHost 127.0.0.1 -Port 49000
+```
+
+Client in `FILE_LIST protocolVersion=1 requestId=<UUID> files=[]` r?i ng?t k?t n?i.
+C? th? ch?y client nhi?u l?n; server ti?p t?c ph?c v?. ?? th? LAN, d?ng IP LAN
+c?a m?y server trong `-ServerHost`, c?ng port v?i `run-server.ps1 -Port ...`.
+Phase 1 ch?a tri?n khai truy?n file, resume, UDP runtime ho?c Swing.
+Chi ti?t API, ki?m th? v? gi?i h?n: [b?o c?o Phase 1](docs/phase1.md).
