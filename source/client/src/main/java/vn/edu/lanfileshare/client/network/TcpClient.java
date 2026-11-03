@@ -29,23 +29,29 @@ public final class TcpClient implements AutoCloseable {
         }
     }
     public synchronized boolean isConnected() { return socket != null && !socket.isClosed(); }
-    public synchronized FileList listFiles() throws IOException {
+    @FunctionalInterface public interface ConnectionOperation<T> {
+        T run(ClientConnection connection) throws IOException;
+    }
+    private boolean exchanging;
+    /** Locks the complete multi-frame exchange, preventing v1 pipelining. Callbacks must not reenter. */
+    public synchronized <T> T exchange(ConnectionOperation<T> operation) throws IOException {
         if (!isConnected()) throw new IOException("Client is disconnected");
-        UUID id = UUID.randomUUID();
-        try {
-            FrameCodec.write(socket.getOutputStream(), ControlCodec.encode(MessageType.LIST_FILES, new ListFiles(1, id)));
-            Frame response = FrameCodec.read(socket.getInputStream());
-            if (!id.equals(ControlCodec.requestId(response))) throw new IOException("Response requestId mismatch");
-            if (response.type() == MessageType.ERROR) {
-                ErrorMessage error = ControlCodec.decode(response, ErrorMessage.class);
-                throw new ServerResponseException(error);
-            }
-            if (response.type() != MessageType.FILE_LIST) throw new IOException("Expected FILE_LIST");
-            return ControlCodec.decode(response, FileList.class);
-        } catch (IOException ex) {
+        if (exchanging) throw new IllegalStateException("An exchange is already in progress");
+        exchanging = true;
+        try { return operation.run(new ClientConnection(socket)); }
+        catch (IOException | RuntimeException ex) {
             try { disconnect(); } catch (IOException close) { ex.addSuppressed(close); }
             throw ex;
-        }
+        } finally { exchanging = false; }
+    }
+    public FileList listFiles() throws IOException {
+        return exchange(connection -> {
+            UUID id = UUID.randomUUID();
+            connection.send(ControlCodec.encode(MessageType.LIST_FILES, new ListFiles(1, id)));
+            Frame response = connection.receive(id);
+            if (response.type() != MessageType.FILE_LIST) throw new IOException("Expected FILE_LIST");
+            return ControlCodec.decode(response, FileList.class);
+        });
     }
     public synchronized void disconnect() throws IOException {
         Socket previous = socket;

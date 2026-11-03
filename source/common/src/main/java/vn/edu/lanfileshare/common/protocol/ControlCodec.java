@@ -80,7 +80,7 @@ public final class ControlCodec {
                     if (name.isBlank() || name.contains("/") || name.indexOf(92) >= 0 || name.contains("..")
                         || name.codePoints().anyMatch(Character::isISOControl)
                         || name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 255)
-                        throw new IOException("Invalid file name");
+                        throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_NAME, "Invalid file name", false);
                 }
                 if (field.getName().equals("sha256") && !value.textValue().matches("[0-9a-f]{64}"))
                     throw new IOException("Invalid SHA-256");

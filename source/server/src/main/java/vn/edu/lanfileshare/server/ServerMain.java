@@ -4,7 +4,7 @@ import java.nio.file.Path;
 import vn.edu.lanfileshare.server.storage.*;
 import vn.edu.lanfileshare.common.error.ErrorCode;
 import vn.edu.lanfileshare.server.network.*;
-/** TCP bootstrap with persistent, verified file metadata; file transfer is not installed. */
+/** TCP bootstrap with persistent, verified file metadata and upload support. */
 public final class ServerMain {
     public static void main(String[] args) throws Exception {
         args = vn.edu.lanfileshare.server.cli.CliArguments.decode(args);
@@ -13,12 +13,12 @@ public final class ServerMain {
         Path storageDirectory = Path.of(args.length > 2 ? args[2] : "runtime/server");
         FileStorageService storage = new FileStorageService(new StorageConfiguration(storageDirectory));
         JsonFileCatalog catalog = new JsonFileCatalog(storage);
-        RequestDispatcher dispatcher = new RequestDispatcher(catalog, (session, frame) ->
-            RequestDispatcher.error(session, vn.edu.lanfileshare.common.protocol.ControlCodec.requestId(frame), ErrorCode.BAD_REQUEST, "Transfer service is not installed yet"));
-        try (TcpServer server = new TcpServer(InetAddress.getByName(bind), port, 32, 30_000, dispatcher)) {
+        long maxFileBytes = args.length > 3 ? Long.parseLong(args[3]) : vn.edu.lanfileshare.server.transfer.UploadHandler.DEFAULT_MAX_FILE_BYTES;
+        try (var uploads = new vn.edu.lanfileshare.server.transfer.UploadHandler(storage, catalog, maxFileBytes);
+             TcpServer server = new TcpServer(InetAddress.getByName(bind), port, 32, 30_000, new RequestDispatcher(catalog, uploads))) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> { try { server.close(); } catch (Exception ex) { System.getLogger(ServerMain.class.getName()).log(System.Logger.Level.ERROR, "Shutdown failed", ex); } }));
             System.out.println("LAN File Sharing TCP listening on " + bind + ":" + server.port());
-            System.out.println("Persistent catalog ready; file transfer is not implemented yet.");
+            System.out.println("Persistent catalog and TCP upload ready.");
             server.serve();
         }
     }

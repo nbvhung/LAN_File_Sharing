@@ -17,6 +17,18 @@ public final class FileStorageService {
     }
     public StorageConfiguration configuration() { return configuration; }
     public Path completedPath(UUID fileId) { return configuration.completed().resolve(Objects.requireNonNull(fileId).toString()); }
+    public Path partPath(UUID transferId) { return configuration.staging().resolve(Objects.requireNonNull(transferId) + ".part"); }
+    /** Upload finalization: no completed UUID slot exists until the part's size/hash are verified. */
+    public void verifyAndPromote(UUID transferId, FileInfo expected) throws IOException {
+        validateMetadata(expected); configuration.initialize();
+        Path part = partPath(transferId);
+        if (!Files.isRegularFile(part, LinkOption.NOFOLLOW_LINKS) || Files.size(part) != expected.size()
+            || !vn.edu.lanfileshare.common.io.FileHashes.sha256(part).equals(expected.sha256()))
+            throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.HASH_MISMATCH, "Upload integrity check failed", false);
+        Path destination = completedPath(expected.fileId());
+        if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Completed UUID slot already exists");
+        Files.move(part, destination, StandardCopyOption.ATOMIC_MOVE);
+    }
     public static void validateMetadata(FileInfo file) throws IOException {
         Objects.requireNonNull(file);
         ControlCodec.validate(ControlCodec.encode(MessageType.FILE_LIST,
