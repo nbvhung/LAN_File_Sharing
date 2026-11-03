@@ -1,5 +1,4 @@
 package vn.edu.lanfileshare.client.transfer;
-
-/** Called synchronously from uploadFile; must not reenter the connection or block waiting for it. */
+/** Called on the transfer thread. Do not reenter or wait for the same connection from callbacks. */
 @FunctionalInterface
-public interface ProgressListener { void onProgress(UploadProgress progress); }
+public interface ProgressListener<P extends TransferProgress> { void onProgress(P progress); }

@@ -13,6 +13,11 @@ public final class ClientConnection {
     public void send(Frame frame) throws IOException { FrameCodec.write(socket.getOutputStream(), frame); }
     public Frame receive(UUID requestId) throws IOException {
         Frame frame = FrameCodec.read(socket.getInputStream());
+        if (frame.type() == MessageType.FILE_CHUNK) {
+            try { FileChunkCodec.decode(frame.payload()); }
+            catch (IOException ex) { throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_FRAME, "Invalid FILE_CHUNK payload", true); }
+            return frame; // Binary chunks have no JSON requestId; the receiver checks transferId and offset.
+        }
         ControlCodec.validate(frame);
         if (!requestId.equals(ControlCodec.requestId(frame))) throw new IOException("Response requestId mismatch");
         if (frame.type() == MessageType.ERROR)

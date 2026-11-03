@@ -17,6 +17,19 @@ public final class FileStorageService {
     }
     public StorageConfiguration configuration() { return configuration; }
     public Path completedPath(UUID fileId) { return configuration.completed().resolve(Objects.requireNonNull(fileId).toString()); }
+    /** Opens and verifies the same handle that a download will use; caller owns it. */
+    public java.nio.channels.FileChannel openCompleted(FileInfo file) throws IOException {
+        validateMetadata(file); configuration.initialize();
+        Path path = completedPath(file.fileId());
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || !Files.isReadable(path))
+            throw new IOException("Completed source is not readable");
+        var channel = java.nio.channels.FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+        try {
+            if (channel.size() != file.size() || !vn.edu.lanfileshare.common.io.FileHashes.sha256(channel).equals(file.sha256()))
+                throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.TRANSFER_CHANGED, "Completed source changed", false);
+            channel.position(0); return channel;
+        } catch (IOException | RuntimeException ex) { try { channel.close(); } catch (IOException cleanup) { ex.addSuppressed(cleanup); } throw ex; }
+    }
     public Path partPath(UUID transferId) { return configuration.staging().resolve(Objects.requireNonNull(transferId) + ".part"); }
     /** Upload finalization: no completed UUID slot exists until the part's size/hash are verified. */
     public void verifyAndPromote(UUID transferId, FileInfo expected) throws IOException {

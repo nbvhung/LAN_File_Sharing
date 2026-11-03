@@ -15,6 +15,7 @@ public final class MessageValidator {
                     throw new IOException("Invalid file name");
                 metadata(r.size(), r.sha256());
             }
+            case ERROR -> ControlCodec.decode(frame, ErrorMessage.class);
             case DOWNLOAD_INIT -> require(ControlCodec.decode(frame, DownloadInit.class).fileId());
             case RESUME_QUERY -> {
                 ResumeQuery r = ControlCodec.decode(frame, ResumeQuery.class);

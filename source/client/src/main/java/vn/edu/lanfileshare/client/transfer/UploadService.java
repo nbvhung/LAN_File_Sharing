@@ -21,7 +21,7 @@ public final class UploadService {
         if (maxFileBytes < 1) throw new IllegalArgumentException("File limit must be positive");
         this.client = Objects.requireNonNull(client); this.maxFileBytes = maxFileBytes;
     }
-    public TransferResult uploadFile(Path localFile, ProgressListener listener) throws IOException {
+    public TransferResult uploadFile(Path localFile, ProgressListener<UploadProgress> listener) throws IOException {
         Objects.requireNonNull(localFile); Objects.requireNonNull(listener);
         if (!Files.isRegularFile(localFile, LinkOption.NOFOLLOW_LINKS) || !Files.isReadable(localFile))
             throw new IOException("Upload source must exist and be a readable regular file");
@@ -40,7 +40,7 @@ public final class UploadService {
         }
     }
     private TransferResult upload(ClientConnection connection, FileChannel source, UploadInit init,
-                                  ProgressListener listener) throws IOException {
+                                  ProgressListener<UploadProgress> listener) throws IOException {
         long started = System.nanoTime();
         connection.send(ControlCodec.encode(MessageType.UPLOAD_INIT, init));
         Frame response = connection.receive(init.requestId());
@@ -79,7 +79,7 @@ public final class UploadService {
         return new TransferResult(ready.transferId(), new FileInfo(ready.fileId(), init.name(), init.size(), init.sha256()),
             Duration.ofNanos(System.nanoTime() - started));
     }
-    private static void report(ProgressListener listener, long bytes, long total, long started, boolean complete) {
+    private static void report(ProgressListener<UploadProgress> listener, long bytes, long total, long started, boolean complete) {
         long nanos = Math.max(1, System.nanoTime() - started);
         double percent = complete ? 100.0 : total == 0 ? 0 : 100.0 * bytes / total;
         listener.onProgress(new UploadProgress(bytes, total, percent, Duration.ofNanos(nanos), bytes * 1_000_000_000.0 / nanos));

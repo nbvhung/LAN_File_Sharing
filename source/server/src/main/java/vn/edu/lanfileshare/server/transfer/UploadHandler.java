@@ -24,6 +24,10 @@ public final class UploadHandler implements TransferService, AutoCloseable {
         this.storage = storage; this.catalog = catalog; this.maxFileBytes = maxFileBytes;
         states = new TransferStateStore(storage.configuration());
     }
+    public boolean hasActive(UUID sessionId) {
+        TransferSession transfer = sessions.get(sessionId);
+        return transfer != null && !transfer.terminal();
+    }
     @Override public Optional<UUID> requestId(UUID sessionId) {
         TransferSession transfer = sessions.get(sessionId);
         return transfer == null ? Optional.empty() : Optional.of(transfer.snapshot().requestId());

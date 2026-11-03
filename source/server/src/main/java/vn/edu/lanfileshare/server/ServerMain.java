@@ -14,11 +14,11 @@ public final class ServerMain {
         FileStorageService storage = new FileStorageService(new StorageConfiguration(storageDirectory));
         JsonFileCatalog catalog = new JsonFileCatalog(storage);
         long maxFileBytes = args.length > 3 ? Long.parseLong(args[3]) : vn.edu.lanfileshare.server.transfer.UploadHandler.DEFAULT_MAX_FILE_BYTES;
-        try (var uploads = new vn.edu.lanfileshare.server.transfer.UploadHandler(storage, catalog, maxFileBytes);
-             TcpServer server = new TcpServer(InetAddress.getByName(bind), port, 32, 30_000, new RequestDispatcher(catalog, uploads))) {
+        try (var transfers = new vn.edu.lanfileshare.server.transfer.TransferCoordinator(storage, catalog, maxFileBytes);
+             TcpServer server = new TcpServer(InetAddress.getByName(bind), port, 32, 30_000, new RequestDispatcher(catalog, transfers))) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> { try { server.close(); } catch (Exception ex) { System.getLogger(ServerMain.class.getName()).log(System.Logger.Level.ERROR, "Shutdown failed", ex); } }));
             System.out.println("LAN File Sharing TCP listening on " + bind + ":" + server.port());
-            System.out.println("Persistent catalog and TCP upload ready.");
+            System.out.println("Persistent catalog, TCP upload and download ready.");
             server.serve();
         }
     }
