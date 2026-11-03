@@ -15,11 +15,18 @@ public final class DownloadHandler implements TransferService, AutoCloseable {
     private final FileStorageService storage;
     private final FileCatalog catalog;
     private final TransferStateStore states;
+    private final TransferSessionManager manager;
+    private final boolean ownsManager;
     private final Map<UUID, DownloadSession> sessions = new ConcurrentHashMap<>();
     public DownloadHandler(FileStorageService storage, FileCatalog catalog) {
-        this.storage = storage; this.catalog = catalog; states = new TransferStateStore(storage.configuration());
+        this(storage, catalog, new TransferSessionManager(storage.configuration()), true);
     }
-    public boolean hasActive(UUID sessionId) { DownloadSession session = sessions.get(sessionId); return session != null && !session.terminal(); }
+    public DownloadHandler(FileStorageService storage, FileCatalog catalog, TransferSessionManager manager) { this(storage, catalog, manager, false); }
+    private DownloadHandler(FileStorageService storage, FileCatalog catalog, TransferSessionManager manager, boolean ownsManager) {
+        this.storage = storage; this.catalog = catalog; this.manager = manager; this.ownsManager = ownsManager;
+        states = new TransferStateStore(storage.configuration());
+    }
+    public boolean hasActive(UUID sessionId) { DownloadSession session = sessions.get(sessionId); return session != null && !session.terminal() && manager.owns(session, sessionId); }
     @Override public Optional<UUID> requestId(UUID sessionId) {
         DownloadSession session = sessions.get(sessionId);
         return session == null ? Optional.empty() : Optional.of(session.snapshot().requestId());
@@ -29,6 +36,7 @@ public final class DownloadHandler implements TransferService, AutoCloseable {
         DownloadSession transfer = sessions.get(session.id());
         if (transfer == null) { error(session, ControlCodec.requestId(frame), null, ErrorCode.TRANSFER_NOT_FOUND, "No download on this connection"); return; }
         TransferSnapshot state = transfer.snapshot();
+        if (!manager.owns(transfer, session.id())) { error(session, state.requestId(), state.transferId(), ErrorCode.TRANSFER_NOT_FOUND, "Transfer expired or is owned elsewhere"); return; }
         UUID request, id;
         switch (frame.type()) {
             case PROGRESS_ACK -> { var ack = ControlCodec.decode(frame, ProgressAck.class); request = ack.requestId(); id = ack.transferId(); }
@@ -46,7 +54,8 @@ public final class DownloadHandler implements TransferService, AutoCloseable {
                 }
                 case TRANSFER_COMPLETE -> transfer.completed(ControlCodec.decode(frame, TransferComplete.class));
                 case ERROR -> {
-                    transfer.failed();
+                    if (ControlCodec.decode(frame, ErrorMessage.class).code() == ErrorCode.IO_ERROR) manager.release(transfer, session.id());
+                    else transfer.failed();
                     LOG.log(System.Logger.Level.WARNING, "Client reported download failure: " + ControlCodec.decode(frame, ErrorMessage.class).code());
                 }
                 default -> throw new IllegalStateException("Unexpected routed message");
@@ -61,11 +70,19 @@ public final class DownloadHandler implements TransferService, AutoCloseable {
         Optional<FileInfo> found = catalog.findById(request.fileId());
         if (found.isEmpty()) { error(session, request.requestId(), null, ErrorCode.NOT_FOUND, "Completed file not found"); return; }
         FileInfo file = found.get();
-        DownloadSession transfer = new DownloadSession(session.id(), request.requestId(), file, storage.openCompleted(file), states);
+        DownloadSession transfer = new DownloadSession(session.id(), request.requestId(), file, storage.openCompleted(file), states, storage, manager.clock());
+        try { manager.register(transfer); }
+        catch (IOException ex) { try { transfer.close(); } catch (IOException cleanup) { ex.addSuppressed(cleanup); } throw ex; }
         sessions.put(session.id(), transfer);
         TransferSnapshot state = transfer.snapshot();
         session.send(ControlCodec.encode(MessageType.TRANSFER_READY, new TransferReady(1, state.requestId(), state.transferId(),
             Direction.DOWNLOAD, file.fileId(), file.name(), file.size(), file.sha256(), 0)));
+    }
+    public void resume(SessionContext session, DownloadSession transfer) throws IOException {
+        sessions.put(session.id(), transfer); TransferSnapshot state = transfer.snapshot();
+        session.send(ControlCodec.encode(MessageType.TRANSFER_READY, new TransferReady(1, state.requestId(), state.transferId(),
+            Direction.DOWNLOAD, state.fileId(), state.name(), state.size(), state.sha256(), state.nextOffset())));
+        // Absolutely no chunk until the new connection's first ACK supplies receiver's durable offset.
     }
     private static void error(SessionContext session, UUID requestId, UUID transferId, ErrorCode code, String message) throws IOException {
         session.send(ControlCodec.encode(MessageType.ERROR, new ErrorMessage(1, requestId, code, message, transferId)));
@@ -73,14 +90,17 @@ public final class DownloadHandler implements TransferService, AutoCloseable {
     @Override public void disconnected(UUID sessionId) {
         DownloadSession transfer = sessions.remove(sessionId);
         if (transfer != null) {
-            try { transfer.interrupted(); } catch (IOException ex) { LOG.log(System.Logger.Level.ERROR, "Cannot persist interrupted download", ex); }
+            try { manager.release(transfer, sessionId); } catch (IOException ex) { LOG.log(System.Logger.Level.ERROR, "Cannot persist interrupted download", ex); }
         }
     }
     @Override public void close() throws IOException {
         IOException failure = null;
-        for (DownloadSession session : sessions.values()) {
-            try { session.interrupted(); } catch (IOException ex) { if (failure == null) failure = ex; else failure.addSuppressed(ex); }
+        for (var entry : sessions.entrySet()) {
+            try { manager.release(entry.getValue(), entry.getKey()); }
+            catch (IOException ex) { if (failure == null) failure = ex; else failure.addSuppressed(ex); }
         }
-        sessions.clear(); if (failure != null) throw failure;
+        sessions.clear();
+        if (ownsManager) { try { manager.close(); } catch (IOException ex) { if (failure == null) failure = ex; else failure.addSuppressed(ex); } }
+        if (failure != null) throw failure;
     }
 }

@@ -29,6 +29,9 @@ public final class TransferStateStore {
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } finally { Files.deleteIfExists(temporary); }
     }
+    public void delete(UUID transferId) throws IOException {
+        synchronized (lock(transferId)) { Files.deleteIfExists(configuration.staging().resolve(transferId + ".json")); }
+    }
     /** Diagnostic/future-resume input only; Phase 3 does not restore or authorize transfers from it. */
     public TransferSnapshot read(UUID transferId) throws IOException {
         // Windows cannot replace an open file. Share bounded striped locks across store instances.
