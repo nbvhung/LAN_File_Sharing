@@ -9,7 +9,7 @@ import vn.edu.lanfileshare.common.protocol.*;
 /** Sequential v1 connection. A failed exchange closes the connection; reconnect explicitly. */
 public final class TcpClient implements AutoCloseable {
     private final int timeoutMillis;
-    private Socket socket;
+    private volatile Socket socket;
     private String lastHost;
     private int lastPort;
     private volatile ClientState state = ClientState.DISCONNECTED;
@@ -76,6 +76,12 @@ public final class TcpClient implements AutoCloseable {
         });
     }
     public synchronized void disconnect() throws IOException { closeSocket(); state = ClientState.DISCONNECTED; }
+    /** Close the current socket without waiting for an exchange's monitor (desktop stop/close).
+     * The exchange still owns cleanup/state and reports its normal interruption checkpoint. */
+    public void interruptConnection() throws IOException {
+        Socket current = socket;
+        if (current != null) current.close();
+    }
     private void closeSocket() throws IOException {
         Socket previous = socket;
         socket = null;
