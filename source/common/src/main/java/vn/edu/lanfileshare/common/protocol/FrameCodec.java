@@ -25,14 +25,14 @@ public final class FrameCodec {
             throw new EOFException("EOF before frame length or incomplete frame length");
         }
         if (length < 1 || length > MAX_FRAME_LENGTH) {
-            throw new IOException("Invalid frame length: " + length);
+            throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_FRAME, "Invalid frame length: " + length, true);
         }
         int code = in.readUnsignedByte();
         MessageType type;
         try {
             type = MessageType.fromCode(code);
         } catch (IllegalArgumentException ex) {
-            throw new IOException("Invalid frame type: " + code, ex);
+            throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_FRAME, "Invalid frame type: " + code, true);
         }
         int payloadLength = length - 1;
         if (type != MessageType.FILE_CHUNK && payloadLength > MAX_CONTROL_PAYLOAD) {
