@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string] $LocalFile, [string] $ServerHost = '127.0.0.1', [int] $Port = 49000, [long] $MaxFileBytes = 1073741824)
+param([Parameter(Mandatory=$true)][string] $LocalFile, [string] $ServerHost = '127.0.0.1', [int] $Port = 49000, [long] $MaxFileBytes = 1073741824, [string] $CheckpointDirectory = 'runtime/client')
 $ErrorActionPreference = 'Stop'
 $LocalFile = (Resolve-Path -LiteralPath $LocalFile).Path
 $projectDir = $PSScriptRoot
@@ -19,7 +19,7 @@ try {
         $relativeJars += ".m2/repository/com/fasterxml/jackson/core/$artifact/2.18.3/$artifact-2.18.3.jar"
     }
     . (Join-Path $projectDir 'scripts/java-launch.ps1')
-    Invoke-LanJava -ClassPath ($relativeJars -join [IO.Path]::PathSeparator) -MainClass 'vn.edu.lanfileshare.client.UploadMain' -ApplicationArguments @($LocalFile, $ServerHost, [string] $Port, [string] $MaxFileBytes)
+    Invoke-LanJava -ClassPath ($relativeJars -join [IO.Path]::PathSeparator) -MainClass 'vn.edu.lanfileshare.client.UploadMain' -ApplicationArguments @($LocalFile, $ServerHost, [string] $Port, [string] $MaxFileBytes, $CheckpointDirectory)
     exit $script:LanJavaExitCode
 }
 finally { Pop-Location }

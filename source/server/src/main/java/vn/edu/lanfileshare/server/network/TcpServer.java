@@ -12,6 +12,8 @@ public final class TcpServer implements AutoCloseable {
     private final Set<Socket> sockets = ConcurrentHashMap.newKeySet();
     private final RequestDispatcher dispatcher;
     private final int timeoutMillis;
+    private final vn.edu.lanfileshare.common.io.PayloadMetrics metrics = new vn.edu.lanfileshare.common.io.PayloadMetrics();
+    public vn.edu.lanfileshare.common.io.PayloadMetrics.Snapshot metrics() { return metrics.snapshot(); }
     private final AtomicBoolean closed = new AtomicBoolean();
     public TcpServer(InetAddress bindAddress, int port, int maxConnections, int timeoutMillis, RequestDispatcher dispatcher) throws IOException {
         if (maxConnections < 1 || timeoutMillis < 1) throw new IllegalArgumentException("Invalid server limits");
@@ -46,7 +48,7 @@ public final class TcpServer implements AutoCloseable {
             try {
                 socket.setSoTimeout(timeoutMillis);
                 socket.setTcpNoDelay(true);
-                workers.execute(new ClientSession(socket, dispatcher, () -> sockets.remove(socket)));
+                workers.execute(new ClientSession(socket, dispatcher, () -> sockets.remove(socket), metrics));
             } catch (RejectedExecutionException ex) {
                 try (socket) {
                     LOG.log(System.Logger.Level.WARNING, "SERVER_BUSY: connection limit reached");

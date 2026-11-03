@@ -8,7 +8,10 @@ import vn.edu.lanfileshare.common.protocol.FrameCodec;
 public final class SessionContext {
     private final UUID id = UUID.randomUUID();
     private final OutputStream output;
-    public SessionContext(OutputStream output) { this.output = output; }
+    private final vn.edu.lanfileshare.common.io.PayloadMetrics metrics;
+    public SessionContext(OutputStream output) { this(output, new vn.edu.lanfileshare.common.io.PayloadMetrics()); }
+    public SessionContext(OutputStream output, vn.edu.lanfileshare.common.io.PayloadMetrics metrics) { this.output = output; this.metrics = metrics; }
+    public void received(Frame frame) { metrics.received(frame); }
     public UUID id() { return id; }
-    public synchronized void send(Frame frame) throws IOException { FrameCodec.write(output, frame); }
+    public synchronized void send(Frame frame) throws IOException { FrameCodec.write(output, frame); metrics.sent(frame); }
 }

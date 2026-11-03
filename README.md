@@ -1,5 +1,22 @@
 # Chia sẻ file trong mạng LAN
 
+## Phase 5: Resume upload/download
+
+Đã hỗ trợ reconnect và resume TCP v1 hai chiều, giữ transferId/fileId, xác minh offset và SHA-256; session server giữ 24 giờ trong cùng tiến trình. Nhánh triển khai: `feature/tv2-upload-server` (TV2 phụ trách hash/session/resume, phối hợp API client TV3).
+
+```powershell
+.\build.ps1 compile test package
+# Terminal 1
+.\run-server.ps1
+# Terminal 2: dùng file >= 1 MiB và đích chưa tồn tại
+New-Item -ItemType Directory -Force runtime/downloads | Out-Null
+.\run-resume-demo.ps1 -LocalFile 'D:\data\sample.bin' -Destination runtime/downloads/resumed.bin
+```
+
+Demo tự ngắt socket ở khoảng 30% upload/40% download rồi tiếp tục phần thiếu. CLI riêng: `run-resume-upload.ps1 -TransferId <uuid>` và `run-resume-download.ps1 -TransferId <uuid> -CheckpointFile <path>` cho phiên đang gián đoạn. Không khôi phục session sau server restart; không resume transfer đã completed. Giữ chính sách không ghi đè file đích.
+
+Đã chạy compile/test/package: **118 test PASS**. Smoke file 100 MiB với heap 32 MiB mỗi tiến trình thành công, upload 30 + 70 MiB và download 40 + 60 MiB, bytes/hash khớp. Xem [báo cáo Phase 5](docs/phase5.md) để biết API, state machine, metadata, số đo, giới hạn và cách chạy CLI.
+
 Project bài tập lớn môn Lập trình mạng. Yêu cầu và phân công lấy từ `../De_tai_Chia_se_file_LAN_Java_Swing.docx`.
 
 ## Phạm vi
@@ -21,7 +38,7 @@ Mỗi module có `pom.xml`, `src/main/java`, `src/test/java`. File chạy thực
 
 ## Build
 
-Yêu cầu JDK 21+ và Maven 3.9+. Từ thư mục project, trong PowerShell chạy `./build.ps1 validate`, `./build.ps1 test` hoặc `./build.ps1 package`. Script đặt Maven repository tại `.m2/repository` trong project; thư mục này đã được bỏ qua bởi Git. Có thể chạy trực tiếp từ `source/` bằng `mvn "-Dmaven.repo.local=../.m2/repository" validate`. Đã có TCP server skeleton và LIST_FILES; truyền file và Swing chờ TV2/TV3 triển khai.
+Yêu cầu JDK 21+ và Maven 3.9+. Từ thư mục project, trong PowerShell chạy `./build.ps1 validate`, `./build.ps1 test` hoặc `./build.ps1 package`. Script đặt Maven repository tại `.m2/repository` trong project; thư mục này đã được bỏ qua bởi Git. Có thể chạy trực tiếp từ `source/` bằng `mvn "-Dmaven.repo.local=../.m2/repository" validate`. Đã có LIST_FILES, upload/download và resume TCP; Swing chưa triển khai.
 
 Lần chạy `test/package` đầu tiên cần truy cập Maven Central để tải plugin và thư viện. Nếu mạng hiện tại chặn Maven Central, chạy trên máy có Internet hoặc cấu hình mirror Maven được phép sử dụng; sau khi cache đủ dependency có thể build offline.
 
@@ -51,7 +68,7 @@ File 1/10/100 MB; 1/4/8 client; hash khớp; ngắt rồi resume; IP sai, timeou
 .\run-server.ps1 -Port 49000 -BindAddress 127.0.0.1
 ```
 
-Dừng bằng Ctrl+C. Server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa có file hợp lệ. Hiện hỗ trợ upload và download TCP; resume chưa triển khai. Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
+Dừng bằng Ctrl+C. Server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa có file hợp lệ. Hiện hỗ trợ upload và download TCP; resume hai chiều đã triển khai (xem Phase 5). Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
 
 Hợp đồng triển khai cho TV2/TV3: [docs/tv1-api.md](docs/tv1-api.md).
 

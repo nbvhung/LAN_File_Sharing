@@ -11,20 +11,24 @@ public final class ClientSession implements Runnable {
     private final Socket socket;
     private final RequestDispatcher dispatcher;
     private final Runnable onClosed;
+    private final vn.edu.lanfileshare.common.io.PayloadMetrics metrics;
     public ClientSession(Socket socket, RequestDispatcher dispatcher, Runnable onClosed) {
-        this.socket = socket; this.dispatcher = dispatcher; this.onClosed = onClosed;
+        this(socket, dispatcher, onClosed, new vn.edu.lanfileshare.common.io.PayloadMetrics());
+    }
+    public ClientSession(Socket socket, RequestDispatcher dispatcher, Runnable onClosed, vn.edu.lanfileshare.common.io.PayloadMetrics metrics) {
+        this.socket = socket; this.dispatcher = dispatcher; this.onClosed = onClosed; this.metrics = metrics;
     }
     @Override public void run() {
         LOG.log(System.Logger.Level.INFO, "Connected: " + socket.getRemoteSocketAddress());
         SessionContext session = null;
         try (socket) {
-            session = new SessionContext(socket.getOutputStream());
+            session = new SessionContext(socket.getOutputStream(), metrics);
             PushbackInputStream input = new PushbackInputStream(new BufferedInputStream(socket.getInputStream()));
             while (!socket.isClosed()) {
                 int first = input.read();
                 if (first == -1) break;
                 input.unread(first);
-                Frame frame = FrameCodec.read(input);
+                Frame frame = FrameCodec.read(input); session.received(frame);
                 try { dispatcher.dispatch(session, frame); }
                 catch (ControlCodec.UnsupportedVersionException ex) {
                     RequestDispatcher.error(session, dispatcher.requestId(session, frame), ErrorCode.UNSUPPORTED_VERSION, "Protocol version 1 required"); break;
