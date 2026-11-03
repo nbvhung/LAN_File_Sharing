@@ -28,12 +28,17 @@ public final class RequestDispatcher {
             case UPLOAD_INIT, DOWNLOAD_INIT, RESUME_QUERY, PROGRESS_ACK, TRANSFER_COMPLETE, FILE_CHUNK -> {
                 try { MessageValidator.validate(frame); }
                 catch (ControlCodec.UnsupportedVersionException ex) { throw ex; }
-                catch (IOException ex) { throw new ProtocolException(ErrorCode.BAD_REQUEST, "Invalid control request", false); }
+                catch (ProtocolException ex) { throw ex; }
+                catch (IOException ex) {
+                    if (frame.type() == MessageType.FILE_CHUNK)
+                        throw new ProtocolException(ErrorCode.INVALID_FRAME, "Invalid FILE_CHUNK payload", true);
+                    throw new ProtocolException(ErrorCode.BAD_REQUEST, "Invalid control request", false);
+                }
                 transfers.handle(session, frame);
             }
             default -> {
                 try { ControlCodec.validate(frame); }
-                catch (ControlCodec.UnsupportedVersionException ex) { throw ex; }
+                catch (ProtocolException ex) { throw ex; }
                 catch (IOException ex) { throw new ProtocolException(ErrorCode.BAD_REQUEST, "Invalid control request", false); }
                 error(session, ControlCodec.requestId(frame), ErrorCode.BAD_REQUEST, "Unsupported client request");
             }
@@ -43,6 +48,10 @@ public final class RequestDispatcher {
         try { return ControlCodec.decode(frame, ListFiles.class); }
         catch (ControlCodec.UnsupportedVersionException ex) { throw ex; }
         catch (IOException ex) { throw new ProtocolException(ErrorCode.BAD_REQUEST, "Invalid LIST_FILES", false); }
+    }
+    public UUID requestId(SessionContext session, Frame frame) throws IOException {
+        if (frame.type() != MessageType.FILE_CHUNK) return ControlCodec.requestId(frame);
+        return transfers.requestId(session.id()).orElseThrow(() -> new IOException("No upload requestId available"));
     }
     public void disconnected(UUID sessionId) { transfers.disconnected(sessionId); }
     public static void error(SessionContext session, UUID requestId, ErrorCode code, String message) throws IOException {

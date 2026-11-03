@@ -51,7 +51,7 @@ File 1/10/100 MB; 1/4/8 client; hash khớp; ngắt rồi resume; IP sai, timeou
 .\run-server.ps1 -Port 49000 -BindAddress 127.0.0.1
 ```
 
-Dừng bằng Ctrl+C. Từ Phase 2, server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa đăng ký file hợp lệ. Chưa triển khai truyền file. Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
+Dừng bằng Ctrl+C. Server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa có file hợp lệ. Từ Phase 3 hỗ trợ upload TCP; download/resume chưa triển khai. Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
 
 Hợp đồng triển khai cho TV2/TV3: [docs/tv1-api.md](docs/tv1-api.md).
 
@@ -93,3 +93,20 @@ CLI client hiển thị fileId, name, size và sha256. Hai lần đăng ký cùn
 **Giới hạn v1:** FILE_LIST không có pagination. Nếu toàn bộ JSON vượt 65536 byte, server trả `ERROR SERVER_BUSY` với requestId gốc, không cắt JSON hoặc trả thiếu file. Listing tính lại SHA-256 nên có chi phí theo tổng dung lượng file; dữ liệu lớn có thể chạm timeout. Không sửa trực tiếp runtime trong lúc server đang chạy.
 
 Xem [thiết kế, API Phase 3/4 và kiểm thử Phase 2](docs/phase2.md).
+
+## Phase 3: Upload file qua TCP (TV2)
+
+Dừng server cũ bằng Ctrl+C trước khi build và chạy lại. Mở hai terminal tại repository root:
+
+```powershell
+./build.ps1 compile test package
+# Terminal 1
+./run-server.ps1 -Port 49000 -StorageDirectory runtime/server
+# Terminal 2
+./run-upload.ps1 -LocalFile README.md -ServerHost 127.0.0.1 -Port 49000
+./run-client.ps1 -ServerHost 127.0.0.1 -Port 49000
+```
+
+Lệnh upload truyền **nội dung file**, không chỉ metadata. Client hash source trước, gửi chunk binary tối đa 64 KiB và chờ ACK từng chunk; chỉ báo `UPLOAD_COMPLETE` sau khi server kiểm tra size/SHA-256 và đăng ký catalog. Không cần run-catalog.ps1 cho upload. Tên trùng được phép, phân biệt bằng UUID.
+
+Giới hạn mặc định 1 GiB ở mỗi bên, cấu hình bằng `-MaxFileBytes`. File rỗng và tên Unicode được hỗ trợ. Hash sai không công bố file; kết nối gián đoạn giữ `.part` và snapshot INTERRUPTED, nhưng **chưa có reconnect/resume**. Không sửa source trong lúc upload. Xem [luồng, state, API và bằng chứng Phase 3](docs/phase3.md).

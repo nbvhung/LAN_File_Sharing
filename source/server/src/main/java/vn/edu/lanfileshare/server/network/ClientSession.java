@@ -2,7 +2,6 @@ package vn.edu.lanfileshare.server.network;
 
 import java.io.*;
 import java.net.Socket;
-import java.util.UUID;
 import vn.edu.lanfileshare.common.error.ErrorCode;
 import vn.edu.lanfileshare.common.protocol.*;
 
@@ -28,13 +27,14 @@ public final class ClientSession implements Runnable {
                 Frame frame = FrameCodec.read(input);
                 try { dispatcher.dispatch(session, frame); }
                 catch (ControlCodec.UnsupportedVersionException ex) {
-                    RequestDispatcher.error(session, requestId(frame), ErrorCode.UNSUPPORTED_VERSION, "Protocol version 1 required"); break;
+                    RequestDispatcher.error(session, dispatcher.requestId(session, frame), ErrorCode.UNSUPPORTED_VERSION, "Protocol version 1 required"); break;
                 } catch (ProtocolException ex) {
-                    if (frame.type() == MessageType.FILE_CHUNK) throw ex;
-                    RequestDispatcher.error(session, requestId(frame), ex.code(), ex.getMessage());
+                    if (ex.code() == ErrorCode.INVALID_FRAME) throw ex;
+                    RequestDispatcher.error(session, dispatcher.requestId(session, frame), ex.code(), ex.getMessage());
                     if (ex.fatal()) break;
                 } catch (IOException ex) {
-                    RequestDispatcher.error(session, requestId(frame), ErrorCode.IO_ERROR, "Service I/O failure");
+                    LOG.log(System.Logger.Level.WARNING, "Service I/O failure", ex);
+                    RequestDispatcher.error(session, dispatcher.requestId(session, frame), ErrorCode.IO_ERROR, "Service I/O failure");
                     break;
                 }
             }
@@ -48,8 +48,5 @@ public final class ClientSession implements Runnable {
                 catch (RuntimeException ex) { LOG.log(System.Logger.Level.WARNING, "Session cleanup failed", ex); }
             }
         }
-    }
-    private static UUID requestId(Frame frame) throws IOException {
-        return ControlCodec.requestId(frame);
     }
 }

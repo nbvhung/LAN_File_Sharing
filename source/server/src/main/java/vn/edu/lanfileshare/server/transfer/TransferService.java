@@ -7,4 +7,5 @@ import vn.edu.lanfileshare.server.network.SessionContext;
 public interface TransferService {
     void handle(SessionContext session, Frame validatedFrame) throws IOException;
     default void disconnected(UUID sessionId) {}
+    default java.util.Optional<UUID> requestId(UUID sessionId) { return java.util.Optional.empty(); }
 }
