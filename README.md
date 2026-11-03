@@ -51,7 +51,7 @@ File 1/10/100 MB; 1/4/8 client; hash khớp; ngắt rồi resume; IP sai, timeou
 .\run-server.ps1 -Port 49000 -BindAddress 127.0.0.1
 ```
 
-Dừng bằng Ctrl+C. Server hiện trả danh sách rỗng và báo transfer service chưa được cài; chưa truyền file. Test `TcpServerTest` gửi LIST_FILES bằng socket thật với bốn kết nối và kiểm tra server tiếp tục hoạt động sau frame lỗi.
+Dừng bằng Ctrl+C. Từ Phase 2, server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa đăng ký file hợp lệ. Chưa triển khai truyền file. Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
 
 Hợp đồng triển khai cho TV2/TV3: [docs/tv1-api.md](docs/tv1-api.md).
 
@@ -73,3 +73,23 @@ C? th? ch?y client nhi?u l?n; server ti?p t?c ph?c v?. ?? th? LAN, d?ng IP LAN
 c?a m?y server trong `-ServerHost`, c?ng port v?i `run-server.ps1 -Port ...`.
 Phase 1 ch?a tri?n khai truy?n file, resume, UDP runtime ho?c Swing.
 Chi ti?t API, ki?m th? v? gi?i h?n: [b?o c?o Phase 1](docs/phase1.md).
+
+## Phase 2: Catalog và danh sách file thực tế (TV2)
+
+Server mặc định lưu tại `runtime/server`, gồm `completed/<UUID>`, `metadata/<UUID>.json` và `staging/`. Chỉ file có metadata hợp lệ, đúng size và SHA-256 mới được công bố. Catalog đọc lại được sau restart. File thiếu/sai hash, metadata hỏng, `.part`, `.tmp` và bytes chưa đăng ký không xuất hiện trong danh sách.
+
+```powershell
+./build.ps1 compile test package
+# Đăng ký file local trước khi chạy server; chưa có upload qua mạng
+./run-catalog.ps1 -LocalFile README.md -DisplayName README.md -StorageDirectory runtime/demo/storage
+# Terminal 1
+./run-server.ps1 -Port 49000 -StorageDirectory runtime/demo/storage
+# Terminal 2
+./run-client.ps1 -ServerHost 127.0.0.1 -Port 49000
+```
+
+CLI client hiển thị fileId, name, size và sha256. Hai lần đăng ký cùng tên tạo hai UUID khác nhau. StorageDirectory tương đối tính từ repository root khi dùng script; không đặt runtime trong `source/`. Công cụ đăng ký local chỉ dành cho quản trị, chạy khi server đã dừng.
+
+**Giới hạn v1:** FILE_LIST không có pagination. Nếu toàn bộ JSON vượt 65536 byte, server trả `ERROR SERVER_BUSY` với requestId gốc, không cắt JSON hoặc trả thiếu file. Listing tính lại SHA-256 nên có chi phí theo tổng dung lượng file; dữ liệu lớn có thể chạm timeout. Không sửa trực tiếp runtime trong lúc server đang chạy.
+
+Xem [thiết kế, API Phase 3/4 và kiểm thử Phase 2](docs/phase2.md).

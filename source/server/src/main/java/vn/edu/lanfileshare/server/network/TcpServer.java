@@ -18,7 +18,10 @@ public final class TcpServer implements AutoCloseable {
         this.dispatcher = dispatcher; this.timeoutMillis = timeoutMillis;
         workers = new ThreadPoolExecutor(0, maxConnections, 30, TimeUnit.SECONDS, new SynchronousQueue<>());
         listener = new ServerSocket();
-        try { listener.bind(new InetSocketAddress(bindAddress, port)); }
+        try {
+            listener.setReuseAddress(true);
+            listener.bind(new InetSocketAddress(bindAddress, port));
+        }
         catch (IOException ex) { listener.close(); workers.shutdownNow(); throw ex; }
     }
     public int port() { return listener.getLocalPort(); }

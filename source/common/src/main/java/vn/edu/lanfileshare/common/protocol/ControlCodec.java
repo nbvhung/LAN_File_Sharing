@@ -18,7 +18,7 @@ public final class ControlCodec {
     public static Frame encode(MessageType type, Object message) throws IOException {
         if (type == MessageType.FILE_CHUNK) throw new IOException("Use FileChunkCodec");
         byte[] payload = JSON.writeValueAsBytes(message);
-        if (payload.length > FrameCodec.MAX_CONTROL_PAYLOAD) throw new IOException("Control message too large");
+        if (payload.length > FrameCodec.MAX_CONTROL_PAYLOAD) throw new ControlPayloadTooLargeException();
         return new Frame(type, payload);
     }
     public static <T> T decode(Frame frame, Class<T> type) throws IOException {
@@ -102,6 +102,10 @@ public final class ControlCodec {
             if (!uuid.toString().equals(id)) throw new IllegalArgumentException();
             return uuid;
         } catch (RuntimeException ex) { throw new IOException("Missing valid requestId", ex); }
+    }
+    /** Local serialization limit; adds no wire message or error code. */
+    public static final class ControlPayloadTooLargeException extends IOException {
+        public ControlPayloadTooLargeException() { super("Control message exceeds 65536 bytes"); }
     }
     public static final class UnsupportedVersionException extends ProtocolException {
         public UnsupportedVersionException() { super(vn.edu.lanfileshare.common.error.ErrorCode.UNSUPPORTED_VERSION, "Unsupported protocol version", true); }

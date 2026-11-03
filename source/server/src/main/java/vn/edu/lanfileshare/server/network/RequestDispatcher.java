@@ -7,6 +7,7 @@ import vn.edu.lanfileshare.common.protocol.*;
 import vn.edu.lanfileshare.server.storage.FileCatalog;
 import vn.edu.lanfileshare.server.transfer.TransferService;
 public final class RequestDispatcher {
+    private static final System.Logger LOG = System.getLogger(RequestDispatcher.class.getName());
     private final FileCatalog catalog;
     private final TransferService transfers;
     public RequestDispatcher(FileCatalog catalog, TransferService transfers) { this.catalog = catalog; this.transfers = transfers; }
@@ -14,7 +15,15 @@ public final class RequestDispatcher {
         switch (frame.type()) {
             case LIST_FILES -> {
                 ListFiles request = decodeList(frame);
-                session.send(ControlCodec.encode(MessageType.FILE_LIST, new FileList(1, request.requestId(), catalog.listFiles())));
+                Frame response;
+                try {
+                    response = ControlCodec.encode(MessageType.FILE_LIST, new FileList(1, request.requestId(), catalog.listFiles()));
+                } catch (ControlCodec.ControlPayloadTooLargeException ex) {
+                    LOG.log(System.Logger.Level.WARNING, "FILE_LIST exceeds v1 65536-byte JSON limit");
+                    error(session, request.requestId(), ErrorCode.SERVER_BUSY, "Catalog exceeds v1 listing limit (65536 bytes); pagination is unavailable");
+                    return;
+                }
+                session.send(response);
             }
             case UPLOAD_INIT, DOWNLOAD_INIT, RESUME_QUERY, PROGRESS_ACK, TRANSFER_COMPLETE, FILE_CHUNK -> {
                 try { MessageValidator.validate(frame); }

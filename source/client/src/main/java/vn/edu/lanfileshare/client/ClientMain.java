@@ -13,7 +13,11 @@ public final class ClientMain {
             client.connect(host, port);
             var response = client.listFiles();
             System.out.println("FILE_LIST protocolVersion=" + response.protocolVersion()
-                + " requestId=" + response.requestId() + " files=" + response.files());
+                + " requestId=" + response.requestId() + " count=" + response.files().size());
+            System.out.println("fileId | name | size (bytes) | sha256");
+            for (var file : response.files()) {
+                System.out.println(file.fileId() + " | " + file.name() + " | " + file.size() + " | " + file.sha256());
+            }
         }
     }
 }

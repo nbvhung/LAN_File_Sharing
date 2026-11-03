@@ -1,4 +1,4 @@
-param([int] $Port = 49000, [string] $BindAddress = '0.0.0.0')
+param([int] $Port = 49000, [string] $BindAddress = '0.0.0.0', [string] $StorageDirectory = 'runtime/server')
 $ErrorActionPreference = 'Stop'
 $projectDir = $PSScriptRoot
 $cacheDir = Join-Path $projectDir '.m2/repository'
@@ -17,7 +17,8 @@ try {
     foreach ($artifact in @('jackson-databind','jackson-core','jackson-annotations')) {
         $relativeJars += ".m2/repository/com/fasterxml/jackson/core/$artifact/2.18.3/$artifact-2.18.3.jar"
     }
-    & java -cp ($relativeJars -join [IO.Path]::PathSeparator) vn.edu.lanfileshare.server.ServerMain $Port $BindAddress
-    exit $LASTEXITCODE
+    . (Join-Path $projectDir 'scripts/java-launch.ps1')
+    Invoke-LanJava -ClassPath ($relativeJars -join [IO.Path]::PathSeparator) -MainClass 'vn.edu.lanfileshare.server.ServerMain' -ApplicationArguments @([string] $Port, $BindAddress, $StorageDirectory)
+    exit $script:LanJavaExitCode
 }
 finally { Pop-Location }

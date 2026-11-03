@@ -38,7 +38,7 @@ public final class TcpClient implements AutoCloseable {
             if (!id.equals(ControlCodec.requestId(response))) throw new IOException("Response requestId mismatch");
             if (response.type() == MessageType.ERROR) {
                 ErrorMessage error = ControlCodec.decode(response, ErrorMessage.class);
-                throw new IOException("Server error: " + error.code() + ": " + error.message());
+                throw new ServerResponseException(error);
             }
             if (response.type() != MessageType.FILE_LIST) throw new IOException("Expected FILE_LIST");
             return ControlCodec.decode(response, FileList.class);
