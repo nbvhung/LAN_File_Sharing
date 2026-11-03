@@ -25,7 +25,7 @@ public final class RequestDispatcher {
                 }
                 session.send(response);
             }
-            case UPLOAD_INIT, DOWNLOAD_INIT, RESUME_QUERY, PROGRESS_ACK, TRANSFER_COMPLETE, FILE_CHUNK -> {
+            case UPLOAD_INIT, DOWNLOAD_INIT, RESUME_QUERY, PROGRESS_ACK, TRANSFER_COMPLETE, FILE_CHUNK, ERROR -> {
                 try { MessageValidator.validate(frame); }
                 catch (ControlCodec.UnsupportedVersionException ex) { throw ex; }
                 catch (ProtocolException ex) { throw ex; }

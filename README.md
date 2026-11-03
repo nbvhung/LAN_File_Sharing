@@ -51,7 +51,7 @@ File 1/10/100 MB; 1/4/8 client; hash khớp; ngắt rồi resume; IP sai, timeou
 .\run-server.ps1 -Port 49000 -BindAddress 127.0.0.1
 ```
 
-Dừng bằng Ctrl+C. Server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa có file hợp lệ. Từ Phase 3 hỗ trợ upload TCP; download/resume chưa triển khai. Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
+Dừng bằng Ctrl+C. Server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa có file hợp lệ. Hiện hỗ trợ upload và download TCP; resume chưa triển khai. Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
 
 Hợp đồng triển khai cho TV2/TV3: [docs/tv1-api.md](docs/tv1-api.md).
 
@@ -110,3 +110,17 @@ Dừng server cũ bằng Ctrl+C trước khi build và chạy lại. Mở hai te
 Lệnh upload truyền **nội dung file**, không chỉ metadata. Client hash source trước, gửi chunk binary tối đa 64 KiB và chờ ACK từng chunk; chỉ báo `UPLOAD_COMPLETE` sau khi server kiểm tra size/SHA-256 và đăng ký catalog. Không cần run-catalog.ps1 cho upload. Tên trùng được phép, phân biệt bằng UUID.
 
 Giới hạn mặc định 1 GiB ở mỗi bên, cấu hình bằng `-MaxFileBytes`. File rỗng và tên Unicode được hỗ trợ. Hash sai không công bố file; kết nối gián đoạn giữ `.part` và snapshot INTERRUPTED, nhưng **chưa có reconnect/resume**. Không sửa source trong lúc upload. Xem [luồng, state, API và bằng chứng Phase 3](docs/phase3.md).
+
+## Phase 4: Download file qua TCP (TV3)
+
+Dừng server cũ bằng Ctrl+C, build lại rồi chạy server như trên. Upload một file, lấy UUID từ `UPLOAD_COMPLETE` hoặc `run-client.ps1`, sau đó:
+
+```powershell
+New-Item -ItemType Directory -Force runtime/downloads | Out-Null
+# Thay <fileId> bằng UUID thực tế, destination là tên file local bạn chọn
+./run-download.ps1 -FileId '<fileId>' -Destination runtime/downloads/received.bin -ServerHost 127.0.0.1 -Port 49000
+```
+
+Client ghi `.part` và checkpoint, ACK từng chunk, kiểm tra size/SHA-256 rồi mới công bố destination và báo `DOWNLOAD_COMPLETE`. File rỗng/Unicode được hỗ trợ. **Không ghi đè:** destination phải chưa tồn tại, kể cả khi có tiến trình tạo nó giữa chừng. Parent phải tồn tại và ghi được; không dùng tên server để quyết định local path.
+
+Publish độc quyền yêu cầu filesystem hỗ trợ hard link (đã kiểm thử Windows NTFS); filesystem không hỗ trợ sẽ báo lỗi an toàn. EOF/timeout giữ partial INTERRUPTED, chưa tự resume. Xem [API, giới hạn và kiểm thử Phase 4](docs/phase4.md).
