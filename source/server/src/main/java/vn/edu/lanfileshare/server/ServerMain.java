@@ -1,20 +1,24 @@
 package vn.edu.lanfileshare.server;
 import java.net.InetAddress;
-import java.util.List;
-import java.util.UUID;
+import java.nio.file.Path;
+import vn.edu.lanfileshare.server.storage.*;
 import vn.edu.lanfileshare.common.error.ErrorCode;
 import vn.edu.lanfileshare.server.network.*;
-/** Bootstrap using empty catalog until TV2 supplies storage/transfer implementations. */
+/** TCP bootstrap with persistent, verified file metadata; file transfer is not installed. */
 public final class ServerMain {
     public static void main(String[] args) throws Exception {
+        args = vn.edu.lanfileshare.server.cli.CliArguments.decode(args);
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 49000;
         String bind = args.length > 1 ? args[1] : "0.0.0.0";
-        RequestDispatcher dispatcher = new RequestDispatcher(List::of, (session, frame) ->
+        Path storageDirectory = Path.of(args.length > 2 ? args[2] : "runtime/server");
+        FileStorageService storage = new FileStorageService(new StorageConfiguration(storageDirectory));
+        JsonFileCatalog catalog = new JsonFileCatalog(storage);
+        RequestDispatcher dispatcher = new RequestDispatcher(catalog, (session, frame) ->
             RequestDispatcher.error(session, vn.edu.lanfileshare.common.protocol.ControlCodec.requestId(frame), ErrorCode.BAD_REQUEST, "Transfer service is not installed yet"));
         try (TcpServer server = new TcpServer(InetAddress.getByName(bind), port, 32, 30_000, dispatcher)) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> { try { server.close(); } catch (Exception ex) { System.getLogger(ServerMain.class.getName()).log(System.Logger.Level.ERROR, "Shutdown failed", ex); } }));
             System.out.println("LAN File Sharing TCP listening on " + bind + ":" + server.port());
-            System.out.println("Skeleton mode: LIST_FILES returns []; file transfer is not implemented yet.");
+            System.out.println("Persistent catalog ready; file transfer is not implemented yet.");
             server.serve();
         }
     }
