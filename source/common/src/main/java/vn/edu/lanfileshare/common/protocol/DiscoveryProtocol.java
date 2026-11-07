@@ -10,5 +10,6 @@ public final class DiscoveryProtocol {
     public static final String REQUEST_PREFIX = "LANFS_DISCOVER/1 ";
     public static final String RESPONSE_PREFIX = "LANFS_HERE/1 ";
 
-    private DiscoveryProtocol() { }
+    private DiscoveryProtocol() {
+    }
 }

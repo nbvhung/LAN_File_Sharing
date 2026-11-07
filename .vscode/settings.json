@@ -1,0 +1,9 @@
+{
+  "java.format.settings.url": "config/java-formatter.xml",
+  "java.format.settings.profile": "LAN File Sharing",
+  "[java]": {
+    "editor.defaultFormatter": "redhat.java",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4
+  }
+}

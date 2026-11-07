@@ -1,5 +1,11 @@
 # Chia sẻ file trong mạng LAN
 
+## Định dạng source code
+
+Java dùng 4 dấu cách để thụt lề, giới hạn dòng mục tiêu 120 ký tự và tách khối lệnh rõ ràng. Maven XML dùng 2 dấu cách. Quy tắc nằm trong `.editorconfig` và `config/java-formatter.xml`.
+
+Khi mở root repository bằng VS Code với extension Java của Red Hat, cấu hình `.vscode/settings.json` chọn sẵn profile **LAN File Sharing**. Dùng **Shift+Alt+F** trên Windows để format file Java. Formatter là công cụ editor, không thêm dependency chạy ứng dụng.
+
 ## Phase 6 — nhiều client và độ ổn định
 
 Server mặc định nhận tối đa 32 session TCP đồng thời, timeout 30 giây; có deadline cho frame/write và phản hồi SERVER_BUSY có requestId khi quá tải nếu còn gửi được response hợp lệ. Cấu hình khi chạy:

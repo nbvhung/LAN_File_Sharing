@@ -7,9 +7,18 @@ import vn.edu.lanfileshare.common.error.ErrorCode;
 public class ProtocolException extends IOException {
     private final ErrorCode code;
     private final boolean fatal;
+
     public ProtocolException(ErrorCode code, String message, boolean fatal) {
-        super(message); this.code = code; this.fatal = fatal;
+        super(message);
+        this.code = code;
+        this.fatal = fatal;
     }
-    public ErrorCode code() { return code; }
-    public boolean fatal() { return fatal; }
+
+    public ErrorCode code() {
+        return code;
+    }
+
+    public boolean fatal() {
+        return fatal;
+    }
 }

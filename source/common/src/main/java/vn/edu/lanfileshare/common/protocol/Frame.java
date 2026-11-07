@@ -9,5 +9,8 @@ public record Frame(MessageType type, byte[] payload) {
         payload = Arrays.copyOf(Objects.requireNonNull(payload, "payload"), payload.length);
     }
 
-    @Override public byte[] payload() { return Arrays.copyOf(payload, payload.length); }
+    @Override
+    public byte[] payload() {
+        return Arrays.copyOf(payload, payload.length);
+    }
 }
