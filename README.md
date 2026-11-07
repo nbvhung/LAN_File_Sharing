@@ -1,5 +1,15 @@
 # Chia sẻ file trong mạng LAN
 
+## Phase 6 — nhiều client và độ ổn định
+
+Server mặc định nhận tối đa 32 session TCP đồng thời, timeout 30 giây; có deadline cho frame/write và phản hồi SERVER_BUSY có requestId khi quá tải nếu còn gửi được response hợp lệ. Cấu hình khi chạy:
+
+```powershell
+.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -MaxConnections 32 -TimeoutMillis 30000
+```
+
+Đã chạy compile/test/package: **141 test PASS**. Có bằng chứng 4/8 upload đồng thời, 4 upload + 4 download, cô lập client lỗi, resume song song và shutdown giữ partial. Xem [báo cáo Phase 6: threading, khóa, test và giới hạn](docs/phase6.md). Nhánh triển khai `feature/tv1-tcp-server`; chưa merge bản Phase 6.
+
 ## Hướng dẫn chạy trên localhost (Windows PowerShell)
 
 Ứng dụng chạy bằng **Java Swing**, không mở bằng trình duyệt. `localhost` là máy đang chạy ứng dụng; dùng địa chỉ **127.0.0.1**, cổng TCP **49000**. Không truy cập `http://localhost:49000` vì cổng này sử dụng giao thức TCP riêng, không phải HTTP.

@@ -14,7 +14,7 @@ public final class JsonFileCatalog implements FileCatalog {
         metadata = new JsonMetadataStore(storage.configuration());
         listFiles(); // Validate persisted entries on startup, without publishing broken records.
     }
-    @Override public synchronized List<FileInfo> listFiles() throws IOException {
+    @Override public List<FileInfo> listFiles() throws IOException {
         List<FileInfo> result = new ArrayList<>();
         for (FileInfo file : metadata.readAll()) {
             try {
@@ -28,7 +28,7 @@ public final class JsonFileCatalog implements FileCatalog {
         return List.copyOf(result);
     }
     /** Caller supplies metadata for an existing UUID slot, never a path from a network payload. */
-    public synchronized void registerCompletedFile(FileInfo file) throws IOException {
+    public void registerCompletedFile(FileInfo file) throws IOException {
         if (!storage.matches(file)) throw new IOException("Completed file does not match metadata");
         metadata.write(file);
     }

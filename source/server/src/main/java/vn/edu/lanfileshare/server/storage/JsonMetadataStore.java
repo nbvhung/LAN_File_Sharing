@@ -14,6 +14,15 @@ final class JsonMetadataStore {
     private static final ObjectMapper JSON = new ObjectMapper()
         .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
         .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private static final Object[] LOCKS = new Object[64];
+    static {
+        java.util.Arrays.setAll(LOCKS, i -> new Object());
+    }
+
+    private Object lock(Path path) {
+        return LOCKS[Math.floorMod(path.toAbsolutePath().normalize().hashCode(), LOCKS.length)];
+    }
+
     private final StorageConfiguration configuration;
     JsonMetadataStore(StorageConfiguration configuration) { this.configuration = configuration; }
     List<FileInfo> readAll() throws IOException {
@@ -27,7 +36,10 @@ final class JsonMetadataStore {
                     if (!filename.equals(id + ".json") || !Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)
                         || Files.size(entry) > 4096) throw new IOException("Invalid metadata entry");
                     JsonNode metadata;
-                    try (var input = Files.newInputStream(entry, LinkOption.NOFOLLOW_LINKS)) { metadata = JSON.readTree(input); }
+                    synchronized (lock(entry)) {
+                        try (var input = Files.newInputStream(entry, LinkOption.NOFOLLOW_LINKS)) { metadata = JSON.readTree(input);
+                        }
+                    }
                     var envelope = JSON.createObjectNode();
                     envelope.put("protocolVersion", 1).put("requestId", new UUID(0, 0).toString());
                     envelope.putArray("files").add(metadata);
@@ -44,11 +56,13 @@ final class JsonMetadataStore {
     void write(FileInfo file) throws IOException {
         configuration.initialize();
         Path target = configuration.metadata().resolve(file.fileId() + ".json");
-        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("File ID already registered");
+        synchronized (lock(target)) {
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("File ID already registered");
         Path temporary = Files.createTempFile(configuration.metadata(), "record-", ".tmp");
         try {
             Files.write(temporary, JSON.writeValueAsBytes(file));
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
         } finally { Files.deleteIfExists(temporary); }
     }
+}
 }
