@@ -9,10 +9,18 @@ import vn.edu.lanfileshare.common.model.Messages.ErrorMessage;
 public final class ServerResponseException extends IOException {
     private final ErrorCode code;
     private final UUID requestId;
+
     public ServerResponseException(ErrorMessage error) {
         super("Server error: " + error.code() + ": " + error.message());
-        code = error.code(); requestId = error.requestId();
+        code = error.code();
+        requestId = error.requestId();
     }
-    public ErrorCode code() { return code; }
-    public UUID requestId() { return requestId; }
+
+    public ErrorCode code() {
+        return code;
+    }
+
+    public UUID requestId() {
+        return requestId;
+    }
 }

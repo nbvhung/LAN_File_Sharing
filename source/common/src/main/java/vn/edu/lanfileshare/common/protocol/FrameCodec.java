@@ -14,7 +14,8 @@ public final class FrameCodec {
     public static final int MAX_CONTROL_PAYLOAD = 65_536;
     public static final int MAX_CHUNK_DATA = 65_536;
 
-    private FrameCodec() { }
+    private FrameCodec() {
+    }
 
     public static Frame read(InputStream input) throws IOException {
         DataInputStream in = new DataInputStream(input);
@@ -25,14 +26,16 @@ public final class FrameCodec {
             throw new EOFException("EOF before frame length or incomplete frame length");
         }
         if (length < 1 || length > MAX_FRAME_LENGTH) {
-            throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_FRAME, "Invalid frame length: " + length, true);
+            throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_FRAME,
+                    "Invalid frame length: " + length, true);
         }
         int code = in.readUnsignedByte();
         MessageType type;
         try {
             type = MessageType.fromCode(code);
         } catch (IllegalArgumentException ex) {
-            throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_FRAME, "Invalid frame type: " + code, true);
+            throw new ProtocolException(vn.edu.lanfileshare.common.error.ErrorCode.INVALID_FRAME,
+                    "Invalid frame type: " + code, true);
         }
         int payloadLength = length - 1;
         if (type != MessageType.FILE_CHUNK && payloadLength > MAX_CONTROL_PAYLOAD) {
@@ -46,7 +49,8 @@ public final class FrameCodec {
     public static void write(OutputStream output, Frame frame) throws IOException {
         byte[] payload = frame.payload();
         int length = payload.length + 1;
-        if (length > MAX_FRAME_LENGTH || (frame.type() != MessageType.FILE_CHUNK && payload.length > MAX_CONTROL_PAYLOAD)) {
+        if (length > MAX_FRAME_LENGTH
+                || (frame.type() != MessageType.FILE_CHUNK && payload.length > MAX_CONTROL_PAYLOAD)) {
             throw new IOException("Frame payload too large: " + payload.length);
         }
         DataOutputStream out = new DataOutputStream(output);

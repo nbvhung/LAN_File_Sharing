@@ -21,29 +21,62 @@ public final class DownloadSession implements ManagedTransfer {
     private final java.time.Clock clock;
     private final vn.edu.lanfileshare.server.storage.FileStorageService storage;
     private long lastActivity;
-    public DownloadSession(UUID sessionId, UUID requestId, FileInfo file, FileChannel source, TransferStateStore store) throws IOException {
+
+    public DownloadSession(UUID sessionId, UUID requestId, FileInfo file, FileChannel source, TransferStateStore store)
+            throws IOException {
         this(sessionId, requestId, file, source, store, null, java.time.Clock.systemUTC());
     }
+
     public DownloadSession(UUID sessionId, UUID requestId, FileInfo file, FileChannel source, TransferStateStore store,
-        vn.edu.lanfileshare.server.storage.FileStorageService storage, java.time.Clock clock) throws IOException {
-        this.clock = clock; this.storage = storage; lastActivity = clock.millis();
-        this.sessionId = sessionId; this.requestId = requestId; this.file = file; this.source = source; this.store = store;
-        try { persist(); }
-        catch (IOException ex) { try { close(); } catch (IOException cleanup) { ex.addSuppressed(cleanup); } throw ex; }
+            vn.edu.lanfileshare.server.storage.FileStorageService storage, java.time.Clock clock) throws IOException {
+        this.clock = clock;
+        this.storage = storage;
+        lastActivity = clock.millis();
+        this.sessionId = sessionId;
+        this.requestId = requestId;
+        this.file = file;
+        this.source = source;
+        this.store = store;
+        try {
+            persist();
+        } catch (IOException ex) {
+            try {
+                close();
+            } catch (IOException cleanup) {
+                ex.addSuppressed(cleanup);
+            }
+            throw ex;
+        }
     }
+
     public synchronized TransferSnapshot snapshot() {
-        return new TransferSnapshot(1, transferId, file.fileId(), requestId, sessionId, file.name(), file.size(), file.sha256(),
-            Direction.DOWNLOAD, nextOffset, state, lastActivity);
+        return new TransferSnapshot(1, transferId, file.fileId(), requestId, sessionId, file.name(), file.size(),
+                file.sha256(), Direction.DOWNLOAD, nextOffset, state, lastActivity);
     }
-    public synchronized boolean terminal() { return state == TransferState.COMPLETED || state == TransferState.FAILED || state == TransferState.INTERRUPTED; }
+
+    public synchronized boolean terminal() {
+        return state == TransferState.COMPLETED || state == TransferState.FAILED || state == TransferState.INTERRUPTED;
+    }
+
     public synchronized Optional<FileChunk> acknowledge(long offset) throws IOException {
-        if (terminal()) throw new ProtocolException(ErrorCode.TRANSFER_CHANGED, "Download is not active", false);
-        if (!started && resumed && offset >= 0 && offset <= file.size()) awaitingOffset = offset;
-        if (offset != awaitingOffset) throw new ProtocolException(ErrorCode.OFFSET_MISMATCH, "ACK does not match the outstanding chunk", false);
-        started = true; nextOffset = offset; state = TransferState.TRANSFERRING; lastActivity = clock.millis(); persist();
-        if (nextOffset == file.size()) { close(); return Optional.empty(); }
-        if (source.size() != file.size()) throw new ProtocolException(ErrorCode.TRANSFER_CHANGED, "Download source changed", false);
-        int length = (int)Math.min(FrameCodec.MAX_CHUNK_DATA, file.size() - nextOffset);
+        if (terminal())
+            throw new ProtocolException(ErrorCode.TRANSFER_CHANGED, "Download is not active", false);
+        if (!started && resumed && offset >= 0 && offset <= file.size())
+            awaitingOffset = offset;
+        if (offset != awaitingOffset)
+            throw new ProtocolException(ErrorCode.OFFSET_MISMATCH, "ACK does not match the outstanding chunk", false);
+        started = true;
+        nextOffset = offset;
+        state = TransferState.TRANSFERRING;
+        lastActivity = clock.millis();
+        persist();
+        if (nextOffset == file.size()) {
+            close();
+            return Optional.empty();
+        }
+        if (source.size() != file.size())
+            throw new ProtocolException(ErrorCode.TRANSFER_CHANGED, "Download source changed", false);
+        int length = (int) Math.min(FrameCodec.MAX_CHUNK_DATA, file.size() - nextOffset);
         ByteBuffer buffer = ByteBuffer.allocate(length);
         while (buffer.hasRemaining()) {
             if (source.read(buffer, nextOffset + buffer.position()) == -1)
@@ -52,29 +85,67 @@ public final class DownloadSession implements ManagedTransfer {
         awaitingOffset = nextOffset + length;
         return Optional.of(new FileChunk(transferId, nextOffset, buffer.array()));
     }
+
     public synchronized void completed(TransferComplete complete) throws IOException {
         if (terminal() || !started || nextOffset != file.size() || !complete.fileId().equals(file.fileId())
-            || complete.size() != file.size() || !complete.sha256().equals(file.sha256()))
+                || complete.size() != file.size() || !complete.sha256().equals(file.sha256()))
             throw new ProtocolException(ErrorCode.BAD_REQUEST, "Invalid download completion", false);
-        close(); state = TransferState.COMPLETED; lastActivity = clock.millis(); persist();
+        close();
+        state = TransferState.COMPLETED;
+        lastActivity = clock.millis();
+        persist();
     }
+
     public synchronized void failed() throws IOException {
-        close(); if (state != TransferState.COMPLETED) { state = TransferState.FAILED; lastActivity = clock.millis(); persist(); }
+        close();
+        if (state != TransferState.COMPLETED) {
+            state = TransferState.FAILED;
+            lastActivity = clock.millis();
+            persist();
+        }
     }
-    @Override public synchronized void interrupted() throws IOException { close(); if (!terminal()) { state = TransferState.INTERRUPTED; lastActivity = clock.millis(); persist(); } }
-    @Override public synchronized void resume(UUID owner, UUID request) throws IOException {
+
+    @Override
+    public synchronized void interrupted() throws IOException {
+        close();
+        if (!terminal()) {
+            state = TransferState.INTERRUPTED;
+            lastActivity = clock.millis();
+            persist();
+        }
+    }
+
+    @Override
+    public synchronized void resume(UUID owner, UUID request) throws IOException {
         close();
         try {
-            if (storage == null) throw new IOException("No source resolver");
+            if (storage == null)
+                throw new IOException("No source resolver");
             source = storage.openCompleted(file);
         } catch (IOException ex) {
-            failed(); throw new ProtocolException(ErrorCode.TRANSFER_CHANGED, "Download source is missing or changed", false);
+            failed();
+            throw new ProtocolException(ErrorCode.TRANSFER_CHANGED, "Download source is missing or changed", false);
         }
-        sessionId = owner; requestId = request; started = false; resumed = true;
-        awaitingOffset = nextOffset; state = TransferState.INITIALIZED; lastActivity = clock.millis(); persist();
+        sessionId = owner;
+        requestId = request;
+        started = false;
+        resumed = true;
+        awaitingOffset = nextOffset;
+        state = TransferState.INITIALIZED;
+        lastActivity = clock.millis();
+        persist();
     }
-    private void persist() throws IOException { store.save(snapshot()); }
-    @Override public synchronized void close() throws IOException {
-        if (source != null) { FileChannel previous = source; source = null; previous.close(); }
+
+    private void persist() throws IOException {
+        store.save(snapshot());
+    }
+
+    @Override
+    public synchronized void close() throws IOException {
+        if (source != null) {
+            FileChannel previous = source;
+            source = null;
+            previous.close();
+        }
     }
 }

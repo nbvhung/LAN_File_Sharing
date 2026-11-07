@@ -13,17 +13,20 @@ import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 class FrameCodecTest {
-    @Test void roundTripUsesTypeInclusiveLength() throws IOException {
+    @Test
+    void roundTripUsesTypeInclusiveLength() throws IOException {
         byte[] payload = "{\"protocolVersion\":1}".getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         FrameCodec.write(bytes, new Frame(MessageType.LIST_FILES, payload));
-        assertEquals(payload.length + 1, new java.io.DataInputStream(new ByteArrayInputStream(bytes.toByteArray())).readInt());
+        assertEquals(payload.length + 1,
+                new java.io.DataInputStream(new ByteArrayInputStream(bytes.toByteArray())).readInt());
         Frame decoded = FrameCodec.read(new ByteArrayInputStream(bytes.toByteArray()));
         assertEquals(MessageType.LIST_FILES, decoded.type());
         assertArrayEquals(payload, decoded.payload());
     }
 
-    @Test void rejectsInvalidLengthAndTruncatedFrame() throws IOException {
+    @Test
+    void rejectsInvalidLengthAndTruncatedFrame() throws IOException {
         ByteArrayOutputStream invalid = new ByteArrayOutputStream();
         new DataOutputStream(invalid).writeInt(FrameCodec.MAX_FRAME_LENGTH + 1);
         assertThrows(IOException.class, () -> FrameCodec.read(new ByteArrayInputStream(invalid.toByteArray())));
@@ -36,7 +39,8 @@ class FrameCodecTest {
         assertThrows(EOFException.class, () -> FrameCodec.read(new ByteArrayInputStream(truncated.toByteArray())));
     }
 
-    @Test void rejectsUnknownType() throws IOException {
+    @Test
+    void rejectsUnknownType() throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream out = new DataOutputStream(bytes);
         out.writeInt(1);

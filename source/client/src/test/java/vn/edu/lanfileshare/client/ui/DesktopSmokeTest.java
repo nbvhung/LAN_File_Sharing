@@ -19,57 +19,98 @@ import vn.edu.lanfileshare.server.transfer.*;
 
 /** Real JFrame on an available display. Explicitly skipped in headless CI. */
 class DesktopSmokeTest {
-    @TempDir Path root;
+    @TempDir
+    Path root;
+
     static <T extends Component> T find(Container parent, String name, Class<T> type) {
         for (Component child : parent.getComponents()) {
-            if (name.equals(child.getName()) && type.isInstance(child)) return type.cast(child);
-            if (child instanceof Container container) { T value = find(container, name, type); if (value != null) return value; }
+            if (name.equals(child.getName()) && type.isInstance(child))
+                return type.cast(child);
+            if (child instanceof Container container) {
+                T value = find(container, name, type);
+                if (value != null)
+                    return value;
+            }
         }
         return null;
     }
+
     static JFileChooser chooser(Container parent) {
         for (Component child : parent.getComponents()) {
-            if (child instanceof JFileChooser value) return value;
-            if (child instanceof Container container) { JFileChooser value = chooser(container); if (value != null) return value; }
+            if (child instanceof JFileChooser value)
+                return value;
+            if (child instanceof Container container) {
+                JFileChooser value = chooser(container);
+                if (value != null)
+                    return value;
+            }
         }
         return null;
     }
+
     static UiSnapshot await(MainFrame frame, Predicate<UiSnapshot> condition) throws Exception {
         CompletableFuture<UiSnapshot> result = new CompletableFuture<>();
         AtomicReference<Timer> timer = new AtomicReference<>();
         SwingUtilities.invokeAndWait(() -> {
             timer.set(new Timer(20, event -> {
                 UiSnapshot value = frame.controller().snapshot();
-                if (condition.test(value)) { ((Timer)event.getSource()).stop(); result.complete(value); }
-            })); timer.get().start();
+                if (condition.test(value)) {
+                    ((Timer) event.getSource()).stop();
+                    result.complete(value);
+                }
+            }));
+            timer.get().start();
         });
-        try { return result.get(30, TimeUnit.SECONDS); }
-        finally { SwingUtilities.invokeAndWait(() -> timer.get().stop()); }
+        try {
+            return result.get(30, TimeUnit.SECONDS);
+        } finally {
+            SwingUtilities.invokeAndWait(() -> timer.get().stop());
+        }
     }
-    @Test void opensConnectsRendersResizesDisconnectsAndCloses() throws Exception {
-        Assumptions.assumeFalse(GraphicsEnvironment.isHeadless(), "Desktop display unavailable; headless controller tests still exercise real TCP transfers");
+
+    @Test
+    void opensConnectsRendersResizesDisconnectsAndCloses() throws Exception {
+        Assumptions.assumeFalse(GraphicsEnvironment.isHeadless(),
+                "Desktop display unavailable; headless controller tests still exercise real TCP transfers");
         FileStorageService storage = new FileStorageService(new StorageConfiguration(root.resolve("server")));
         JsonFileCatalog catalog = new JsonFileCatalog(storage);
         try (TransferCoordinator transfers = new TransferCoordinator(storage, catalog, 1L << 30);
-             TcpServer server = new TcpServer(java.net.InetAddress.getLoopbackAddress(), 0, 4, 10000, new RequestDispatcher(catalog, transfers))) {
-            server.start(); AtomicReference<MainFrame> ref = new AtomicReference<>();
+                TcpServer server = new TcpServer(java.net.InetAddress.getLoopbackAddress(), 0, 4, 10000,
+                        new RequestDispatcher(catalog, transfers))) {
+            server.start();
+            AtomicReference<MainFrame> ref = new AtomicReference<>();
             SwingUtilities.invokeAndWait(() -> {
-                try { UiTheme.install(); } catch (Exception ex) { throw new AssertionError(ex); }
-                MainFrame frame = new MainFrame(new ServiceClientBackend(root.resolve("client")), "127.0.0.1", server.port());
-                ref.set(frame); frame.setVisible(true);
+                try {
+                    UiTheme.install();
+                } catch (Exception ex) {
+                    throw new AssertionError(ex);
+                }
+                MainFrame frame = new MainFrame(new ServiceClientBackend(root.resolve("client")), "127.0.0.1",
+                        server.port());
+                ref.set(frame);
+                frame.setVisible(true);
             });
             MainFrame frame = ref.get();
             Path source = root.resolve("desktop-source.bin"), target = root.resolve("desktop-received.bin");
-            byte[] data = new byte[1024 * 1024]; new java.util.Random(71).nextBytes(data); data[0] = 0; Files.write(source, data);
-            ConcurrentLinkedQueue<Path> selections = new ConcurrentLinkedQueue<>(); selections.add(source); selections.add(target);
+            byte[] data = new byte[1024 * 1024];
+            new java.util.Random(71).nextBytes(data);
+            data[0] = 0;
+            Files.write(source, data);
+            ConcurrentLinkedQueue<Path> selections = new ConcurrentLinkedQueue<>();
+            selections.add(source);
+            selections.add(target);
             AWTEventListener dialogs = event -> {
-                if (event instanceof WindowEvent window && window.getID() == WindowEvent.WINDOW_OPENED && window.getWindow() instanceof JDialog dialog) {
+                if (event instanceof WindowEvent window && window.getID() == WindowEvent.WINDOW_OPENED
+                        && window.getWindow() instanceof JDialog dialog) {
                     SwingUtilities.invokeLater(() -> {
                         JFileChooser selected = chooser(dialog);
                         if (selected != null) {
-                            Path path = selections.poll(); assertNotNull(path, "Unexpected file chooser");
-                            selected.setSelectedFile(path.toFile()); selected.approveSelection();
-                        } else dialog.dispose(); // Acknowledge real success/error message; assertions still require Completed.
+                            Path path = selections.poll();
+                            assertNotNull(path, "Unexpected file chooser");
+                            selected.setSelectedFile(path.toFile());
+                            selected.approveSelection();
+                        } else
+                            dialog.dispose(); // Acknowledge real success/error message; assertions still require Completed.
                     });
                 }
             };
@@ -90,29 +131,44 @@ class DesktopSmokeTest {
                 });
                 await(frame, s -> !s.busy() && s.state() == UiState.COMPLETED && s.transfers().size() == 2);
                 assertEquals(-1, Files.mismatch(source, target));
-                assertEquals(vn.edu.lanfileshare.common.io.FileHashes.sha256(source), vn.edu.lanfileshare.common.io.FileHashes.sha256(target));
+                assertEquals(vn.edu.lanfileshare.common.io.FileHashes.sha256(source),
+                        vn.edu.lanfileshare.common.io.FileHashes.sha256(target));
                 assertTrue(selections.isEmpty());
                 SwingUtilities.invokeAndWait(() -> {
                     assertTrue(find(frame, "upload", JButton.class).isEnabled());
-                    frame.setSize(1000, 760); frame.validate();
+                    frame.setSize(1000, 760);
+                    frame.validate();
                 });
-                SwingUtilities.invokeAndWait(() -> { frame.setSize(1180, 900); frame.validate(); });
+                SwingUtilities.invokeAndWait(() -> {
+                    frame.setSize(1180, 900);
+                    frame.validate();
+                });
                 SwingUtilities.invokeAndWait(() -> {
                     Container content = frame.getContentPane();
-                    BufferedImage image = new BufferedImage(content.getWidth(), content.getHeight(), BufferedImage.TYPE_INT_RGB);
-                    Graphics2D graphics = image.createGraphics(); content.paint(graphics); graphics.dispose();
-                    try { Files.createDirectories(Path.of("target")); ImageIO.write(image, "png", Path.of("target/swing-phase8.png").toFile()); }
-                    catch (java.io.IOException ex) { throw new AssertionError(ex); }
+                    BufferedImage image = new BufferedImage(content.getWidth(), content.getHeight(),
+                            BufferedImage.TYPE_INT_RGB);
+                    Graphics2D graphics = image.createGraphics();
+                    content.paint(graphics);
+                    graphics.dispose();
+                    try {
+                        Files.createDirectories(Path.of("target"));
+                        ImageIO.write(image, "png", Path.of("target/swing-phase8.png").toFile());
+                    } catch (java.io.IOException ex) {
+                        throw new AssertionError(ex);
+                    }
                     find(frame, "disconnect", JButton.class).doClick(0);
                 });
                 await(frame, s -> !s.connected() && !s.busy());
-                SwingUtilities.invokeAndWait(() -> frame.dispatchEvent(new WindowEvent(frame, WindowEvent.WINDOW_CLOSING)));
+                SwingUtilities
+                        .invokeAndWait(() -> frame.dispatchEvent(new WindowEvent(frame, WindowEvent.WINDOW_CLOSING)));
                 frame.controller().termination().get(3, TimeUnit.SECONDS);
                 assertFalse(frame.isDisplayable());
-                System.out.println("SWING_DESKTOP_PASS display=true uploadDownloadBytes=1048576 byteForByte=true screenshot=target/swing-phase8.png");
+                System.out.println(
+                        "SWING_DESKTOP_PASS display=true uploadDownloadBytes=1048576 byteForByte=true screenshot=target/swing-phase8.png");
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(dialogs);
-                SwingUtilities.invokeAndWait(() -> frame.controller().close()); frame.controller().termination().get(5, TimeUnit.SECONDS);
+                SwingUtilities.invokeAndWait(() -> frame.controller().close());
+                frame.controller().termination().get(5, TimeUnit.SECONDS);
             }
         }
     }
