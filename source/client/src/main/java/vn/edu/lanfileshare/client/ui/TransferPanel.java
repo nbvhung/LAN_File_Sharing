@@ -63,7 +63,7 @@ public final class TransferPanel extends JPanel {
     private void updateDetail() {
         TransferItem item = selected();
         resume.setEnabled(latest != null && latest.connected() && !latest.busy() && !latest.closing() && item != null
-                && item.resumable());
+                && item.resumable() && item.endpoint().equals(latest.endpoint()));
         if (item == null)
             return;
         summary.setText(item.name() + "  |  " + UiFormat.bytes(item.bytes()) + " / " + UiFormat.bytes(item.total())

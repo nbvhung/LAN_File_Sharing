@@ -19,6 +19,8 @@ public record TransferItem(UUID rowId, UUID transferId, String name, Direction d
 
     public TransferItem identity(UUID id, Path saved, long offset, UiState state, String message) {
         return new TransferItem(rowId, id, name, direction, endpoint, localPath, saved, offset, total,
-                state == UiState.COMPLETED ? 100 : percentage, bytesPerSecond, state, message);
+                state == UiState.COMPLETED ? 100
+                        : total == 0 ? 0 : Math.min(99.9, 100.0 * offset / total),
+                state == UiState.INTERRUPTED || state == UiState.FAILED ? 0 : bytesPerSecond, state, message);
     }
 }

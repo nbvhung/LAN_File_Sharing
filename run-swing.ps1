@@ -1,4 +1,4 @@
-param([string] $ServerHost = '127.0.0.1', [int] $Port = 49000, [string] $CheckpointDirectory = 'runtime/client')
+param([string] $ServerHost = '127.0.0.1', [int] $Port = 49000, [string] $CheckpointDirectory = 'runtime/client', [int] $UdpPort = 49001)
 $ErrorActionPreference = 'Stop'
 $projectDir = $PSScriptRoot
 $cacheDir = Join-Path $projectDir '.m2/repository'
@@ -18,7 +18,7 @@ try {
         $relativeJars += ".m2/repository/com/fasterxml/jackson/core/$artifact/2.18.3/$artifact-2.18.3.jar"
     }
     . (Join-Path $projectDir 'scripts/java-launch.ps1')
-    Invoke-LanJava -ClassPath ($relativeJars -join [IO.Path]::PathSeparator) -MainClass 'vn.edu.lanfileshare.client.ui.ClientSwingMain' -ApplicationArguments @($ServerHost, [string] $Port, $CheckpointDirectory)
+    Invoke-LanJava -ClassPath ($relativeJars -join [IO.Path]::PathSeparator) -MainClass 'vn.edu.lanfileshare.client.ui.ClientSwingMain' -ApplicationArguments @($ServerHost, [string] $Port, $CheckpointDirectory, [string] $UdpPort)
     exit $script:LanJavaExitCode
 }
 finally { Pop-Location }

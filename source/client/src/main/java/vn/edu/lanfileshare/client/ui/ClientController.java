@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import javax.swing.SwingUtilities;
 import vn.edu.lanfileshare.client.transfer.*;
+import vn.edu.lanfileshare.client.discovery.DiscoveredServer;
 import vn.edu.lanfileshare.client.network.ServerResponseException;
 import vn.edu.lanfileshare.client.network.TransferFailures;
 import vn.edu.lanfileshare.common.error.ErrorCode;
@@ -18,6 +19,11 @@ public final class ClientController implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(ClientController.class.getName());
     private final ClientBackend backend;
     private final ClientView view;
+    private final ServerDiscovery discovery;
+    private final AtomicBoolean discoveryCancelled = new AtomicBoolean();
+    private CompletableFuture<Void> discoveryCancellation = CompletableFuture.completedFuture(null);
+    private List<DiscoveredServer> discoveredServers = List.of();
+    private DiscoveredServer selectedServer;
     private final ExecutorService worker = daemonExecutor("lanfs-ui-worker");
     private final ExecutorService control = daemonExecutor("lanfs-ui-control");
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -30,7 +36,12 @@ public final class ClientController implements AutoCloseable {
     private String message = "Enter the server IP and TCP port to begin.";
 
     public ClientController(ClientBackend backend, ClientView view) {
+        this(backend, new ServiceServerDiscovery(), view);
+    }
+
+    public ClientController(ClientBackend backend, ServerDiscovery discovery, ClientView view) {
         requireEdt();
+        this.discovery = Objects.requireNonNull(discovery);
         this.backend = Objects.requireNonNull(backend);
         this.view = Objects.requireNonNull(view);
         render();
@@ -46,7 +57,101 @@ public final class ClientController implements AutoCloseable {
 
     public UiSnapshot snapshot() {
         requireEdt();
-        return new UiSnapshot(state, connected, busy, closed.get(), endpoint, message, files, transfers);
+        return new UiSnapshot(state, connected, busy, closed.get(), endpoint, message, files, transfers,
+                discoveredServers, selectedServer);
+    }
+
+    public void discover(String udpPort) {
+        requireEdt();
+        if (!available() || connected) {
+            return;
+        }
+        final int port;
+        try {
+            port = Endpoint.parse("discovery", udpPort).port();
+        } catch (IllegalArgumentException ex) {
+            notice("Invalid UDP port", "UDP port must be a number between 1 and 65535.", true);
+            return;
+        }
+        discoveredServers = List.of();
+        selectedServer = null;
+        discoveryCancelled.set(false);
+        discoveryCancellation = CompletableFuture.completedFuture(null);
+        begin(UiState.DISCOVERING, "Discovering LAN servers ... IP/port entry remains available after the search.");
+        execute(() -> {
+            if (discoveryCancelled.get()) {
+                throw new CancellationException("Discovery cancelled");
+            }
+            return discovery.discover(port);
+        }, results -> {
+            if (discoveryCancelled.get()) {
+                discoveryCancelled();
+                return;
+            }
+            discoveredServers = List.copyOf(results);
+            finish(UiState.DISCONNECTED, results.isEmpty()
+                    ? "No servers found. You can still enter an IP and TCP port manually."
+                    : "Found " + results.size() + " server(s). Select one, then click Connect.");
+            view.log(message);
+        }, error -> {
+            if (discoveryCancelled.get()) {
+                discoveryCancelled();
+                return;
+            }
+            finish(UiState.FAILED, "Discovery failed. Enter an IP and TCP port manually. "
+                    + ErrorMessages.describe(error));
+            view.log(message);
+            notice("Discovery unavailable", message, true);
+        });
+    }
+
+    public void selectServer(DiscoveredServer server) {
+        requireEdt();
+        if (!available() || connected) {
+            return;
+        }
+        if (server != null && !discoveredServers.contains(server)) {
+            notice("Server unavailable", "Select a server from the current discovery results.", false);
+            return;
+        }
+        selectedServer = server;
+        message = server == null ? "Choose a discovered server or enter an IP manually."
+                : "Selected " + server.host() + ":" + server.tcpPort() + ". Click Connect to confirm.";
+        render();
+    }
+
+    public void cancelDiscovery() {
+        requireEdt();
+        if (closed.get() || !busy || state != UiState.DISCOVERING || discoveryCancelled.get()) {
+            return;
+        }
+        CompletableFuture<Void> cancelled = new CompletableFuture<>();
+        discoveryCancellation = cancelled;
+        discoveryCancelled.set(true);
+        message = "Cancelling discovery ...";
+        render();
+        control.execute(() -> {
+            try {
+                discovery.cancel();
+                cancelled.complete(null);
+            } catch (RuntimeException ex) {
+                LOG.log(System.Logger.Level.WARNING, "Discovery cancellation failed", ex);
+                cancelled.completeExceptionally(ex);
+            }
+        });
+    }
+
+    private void discoveryCancelled() {
+        // Keep busy until the control task has completed, so a late Cancel cannot
+        // close the socket of a newly started search. Never wait on the EDT.
+        discoveryCancellation.whenComplete((ignored, error) -> post(() -> {
+            discoveredServers = List.of();
+            selectedServer = null;
+            finish(error == null ? UiState.DISCONNECTED : UiState.FAILED, error == null
+                    ? "Discovery cancelled. Manual IP/port connection is available."
+                    : "Discovery cancellation failed. You can still connect by IP/port manually.");
+            view.log(message);
+        }));
     }
 
     public void connect(String host, String port) {
@@ -215,6 +320,10 @@ public final class ClientController implements AutoCloseable {
         requireEdt();
         if (closed.get() || disconnecting)
             return;
+        if (busy && state == UiState.DISCOVERING) {
+            cancelDiscovery();
+            return;
+        }
         if (busy) {
             disconnecting = true;
             message = "Disconnecting; preserving transfer progress ...";
@@ -369,6 +478,7 @@ public final class ClientController implements AutoCloseable {
         requireEdt();
         if (!closed.compareAndSet(false, true))
             return;
+        discoveryCancelled.set(true);
         message = "Closing connection ...";
         render();
         // Interrupt the socket, not FileChannel writes: a thread interrupt could turn
@@ -376,6 +486,7 @@ public final class ClientController implements AutoCloseable {
         worker.shutdown();
         control.execute(() -> {
             try {
+                discovery.close();
                 backend.interrupt();
                 backend.close();
                 termination.complete(null);
@@ -387,6 +498,12 @@ public final class ClientController implements AutoCloseable {
             }
         });
         view.closed();
+    }
+
+    static void requireWorker() {
+        if (SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("Service operations must run off the EDT");
+        }
     }
 
     static void requireEdt() {

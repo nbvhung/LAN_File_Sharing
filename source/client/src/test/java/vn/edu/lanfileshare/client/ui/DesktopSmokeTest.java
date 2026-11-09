@@ -14,6 +14,8 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 import vn.edu.lanfileshare.server.network.*;
+import vn.edu.lanfileshare.server.discovery.*;
+import vn.edu.lanfileshare.client.discovery.*;
 import vn.edu.lanfileshare.server.storage.*;
 import vn.edu.lanfileshare.server.transfer.*;
 
@@ -76,8 +78,11 @@ class DesktopSmokeTest {
         JsonFileCatalog catalog = new JsonFileCatalog(storage);
         try (TransferCoordinator transfers = new TransferCoordinator(storage, catalog, 1L << 30);
                 TcpServer server = new TcpServer(java.net.InetAddress.getLoopbackAddress(), 0, 4, 10000,
-                        new RequestDispatcher(catalog, transfers))) {
+                        new RequestDispatcher(catalog, transfers));
+                DiscoveryServer discovery = new DiscoveryServer(new DiscoveryConfiguration(
+                        java.net.InetAddress.getLoopbackAddress(), 0, server.port()))) {
             server.start();
+            discovery.start();
             AtomicReference<MainFrame> ref = new AtomicReference<>();
             SwingUtilities.invokeAndWait(() -> {
                 try {
@@ -85,8 +90,11 @@ class DesktopSmokeTest {
                 } catch (Exception ex) {
                     throw new AssertionError(ex);
                 }
-                MainFrame frame = new MainFrame(new ServiceClientBackend(root.resolve("client")), "127.0.0.1",
-                        server.port());
+                MainFrame frame = new MainFrame(new ServiceClientBackend(root.resolve("client")),
+                        new ServiceServerDiscovery(() -> new DiscoveryClient(new DiscoveryOptions(100, 2)),
+                                port -> java.util.List.of(DiscoveryTarget.unicast(
+                                        java.net.InetAddress.getLoopbackAddress(), port))),
+                        "manual.invalid", 49123, discovery.port());
                 ref.set(frame);
                 frame.setVisible(true);
             });
@@ -119,6 +127,21 @@ class DesktopSmokeTest {
                 SwingUtilities.invokeAndWait(() -> {
                     assertEquals("LAN File Sharing", frame.getTitle());
                     assertFalse(find(frame, "refresh", JButton.class).isEnabled());
+                    find(frame, "discover", JButton.class).doClick(0);
+                });
+                UiSnapshot found = await(frame, s -> !s.busy() && s.discoveredServers().size() == 1);
+                assertNull(found.selectedServer());
+                assertFalse(found.connected());
+                assertEquals(0, server.statistics().activeConnections());
+                SwingUtilities.invokeAndWait(() -> {
+                    assertEquals("manual.invalid", find(frame, "serverHost", JTextField.class).getText());
+                    assertEquals("49123", find(frame, "serverPort", JTextField.class).getText());
+                    JComboBox<?> choices = find(frame, "discoveredServers", JComboBox.class);
+                    assertNull(choices.getSelectedItem());
+                    choices.setSelectedIndex(1);
+                    assertEquals("127.0.0.1", find(frame, "serverHost", JTextField.class).getText());
+                    assertEquals(Integer.toString(server.port()), find(frame, "serverPort", JTextField.class).getText());
+                    assertFalse(frame.controller().snapshot().connected());
                     find(frame, "connect", JButton.class).doClick(0);
                 });
                 assertTrue(await(frame, s -> s.connected() && !s.busy()).files().isEmpty());
@@ -126,6 +149,7 @@ class DesktopSmokeTest {
                 UiSnapshot uploaded = await(frame, s -> !s.busy() && s.state() == UiState.COMPLETED);
                 assertEquals(1, uploaded.files().size());
                 SwingUtilities.invokeLater(() -> {
+                    find(frame, "workspaceTabs", JTabbedPane.class).setSelectedIndex(0);
                     find(frame, "serverFiles", JTable.class).setRowSelectionInterval(0, 0);
                     find(frame, "download", JButton.class).doClick(0);
                 });
@@ -136,7 +160,9 @@ class DesktopSmokeTest {
                 assertTrue(selections.isEmpty());
                 SwingUtilities.invokeAndWait(() -> {
                     assertTrue(find(frame, "upload", JButton.class).isEnabled());
-                    frame.setSize(1000, 760);
+                    assertEquals(1, find(frame, "workspaceTabs", JTabbedPane.class).getSelectedIndex());
+                    assertTrue(find(frame, "transfers", JTable.class).getVisibleRect().height >= 96);
+                    frame.setSize(1000, 680);
                     frame.validate();
                 });
                 SwingUtilities.invokeAndWait(() -> {
@@ -152,7 +178,7 @@ class DesktopSmokeTest {
                     graphics.dispose();
                     try {
                         Files.createDirectories(Path.of("target"));
-                        ImageIO.write(image, "png", Path.of("target/swing-phase8.png").toFile());
+                        ImageIO.write(image, "png", Path.of("target/swing-client-complete.png").toFile());
                     } catch (java.io.IOException ex) {
                         throw new AssertionError(ex);
                     }
@@ -164,7 +190,7 @@ class DesktopSmokeTest {
                 frame.controller().termination().get(3, TimeUnit.SECONDS);
                 assertFalse(frame.isDisplayable());
                 System.out.println(
-                        "SWING_DESKTOP_PASS display=true uploadDownloadBytes=1048576 byteForByte=true screenshot=target/swing-phase8.png");
+                        "SWING_DESKTOP_PASS display=true discoverySelection=true uploadDownloadBytes=1048576 byteForByte=true screenshot=target/swing-client-complete.png");
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(dialogs);
                 SwingUtilities.invokeAndWait(() -> frame.controller().close());
