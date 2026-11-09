@@ -1,135 +1,118 @@
-# Phase 8 — Java Swing Desktop Client
+# Phase 8 — Java Swing Desktop Client (TV4)
 
-## A. Phạm vi
+## A. Phạm vi và kết quả
 
-Nhánh `feature/tv3-client-transfer`, fast-forward từ `main` (`44fed4e`). README phân công client/network/transfer/UI cho TV3; tên nhánh TV4 có chữ UI nhưng không thay thế phân công trong README.
+Giao diện Swing thuộc **TV4** theo phân công của người dùng. Bản hoàn thiện được triển khai tại `feature/tv4-ui-discovery`, fast-forward từ main `328af79` sau khi UDP discovery đã được tích hợp. TCP client/transfer services vẫn thuộc TV3; quy tắc phân công đã được ghi vào README và AGENTS.md để các lần làm tiếp không chọn nhầm nhánh.
 
-Đã có cửa sổ **LAN File Sharing**: kết nối IP/port, xem file completed, upload/download qua file chooser, progress/speed, log, ngắt kết nối và Resume trong lịch sử transfer. Không cần CLI để thao tác client. Server vẫn khởi động bằng script hiện có.
+Đã tích hợp các tính năng hiện có: Discover, chọn server, kết nối IP/port thủ công, LIST_FILES, upload/download, tiến độ, xác minh hash, ngắt/reconnect/resume và log. Không thay wire protocol, không viết lại TcpClient, UploadService, DownloadService hoặc UDP DiscoveryClient.
 
-Theo yêu cầu chỉ làm giao diện cho backend đã có: **bỏ qua UDP Discover**, HTTP và các chức năng tương lai. Hiện repository chỉ có hằng số DiscoveryProtocol, chưa có discovery client/service để tích hợp; không tạo chức năng giả hoặc viết UDP mới.
+Cửa sổ **LAN File Sharing** có phần kết nối và ba tab **Server files**, **Transfers**, **Activity log**. Khi bắt đầu upload/download/resume, tự mở Transfers một lần; người dùng vẫn có thể xem tab khác trong lúc worker chạy. Connect thành công mở Server files. Tabs giữ bảng và progress đủ diện tích khi resize, tránh xếp ba bảng dọc khiến Transfers bị ép mất hàng khi thêm Discover.
 
-## B. Cấu trúc và danh sách file
+## B. File tạo mới/chỉnh sửa
 
-Tạo mới dưới `source/client/src/main/java/vn/edu/lanfileshare/client/ui/`:
+Dưới `source/client/src/main/java/vn/edu/lanfileshare/client/ui/`:
 
-| Trách nhiệm | Class |
+| Thành phần | Thay đổi |
 | --- | --- |
-| Entry point, cửa sổ và bố cục | `ClientSwingMain`, `MainFrame`, `UiTheme` |
-| Panel | `ConnectionPanel`, `ServerFilePanel`, `TransferPanel`, `LogPanel` |
-| Table model | `FileTableModel`, `TransferTableModel` |
-| Điều phối, ranh giới service | `ClientController`, `ClientView`, `ClientBackend`, `ServiceClientBackend` |
-| Dữ liệu trình bày | `Endpoint`, `UiState`, `UiSnapshot`, `TransferItem` |
-| Hiển thị | `UiFormat`, `ErrorMessages` |
+| `ServerDiscovery`, `ServiceServerDiscovery` | Adapter mới, gọi DiscoveryClient đã có, giữ current search để hủy/close socket UDP |
+| `DownloadFileName` | Gợi ý basename an toàn, giữ extension hợp lệ; fallback tên UUID khi có path/control/Windows device name |
+| `ClientController` | Điều phối discover/select/cancel trên worker; đóng search khi đóng window; giữ busy đến khi Cancel hoàn tất |
+| `ConnectionPanel` | UDP port, Discover, Cancel search, JComboBox endpoint; giữ nhập IP/TCP port thủ công |
+| `UiSnapshot`, `UiState` | Kết quả discovery immutable, server được chọn, trạng thái Discovering; giữ constructor snapshot cũ |
+| `MainFrame` | Wiring các action, tabs, chọn tên download và cấu hình UDP |
+| `ClientSwingMain` | Thêm UDP port tùy chọn ở tham số thứ 4, giữ ba tham số cũ |
+| `TransferItem`, `TransferPanel` | Progress Interrupted theo offset đã lưu, tốc độ dừng về 0; Resume chỉ enabled khi đúng endpoint gốc |
 
-Tạo `run-swing.ps1`, `docs/phase8.md`; cập nhật README. Test mới: `ClientControllerIntegrationTest`, `UiModelsTest`, `DesktopSmokeTest` trong package test `client.ui`.
+Test mới: `DiscoveryControllerIntegrationTest`, `DiscoveryUiModelsTest`. Cập nhật `DesktopSmokeTest` để thao tác Discover, chọn server, Connect và file chooser thật. Cập nhật `run-swing.ps1`, README, AGENTS.md và tài liệu này. Không sửa POM, common protocol hoặc server/network/transfer/discovery backend.
 
-File backend duy nhất chỉnh sửa là `client/network/TcpClient.java`: socket reference thành volatile và thêm `interruptConnection()`. Hàm này chỉ đóng socket hiện tại, không chờ monitor đang bị giữ trong exchange; worker vẫn xử lý lỗi, checkpoint và state theo code Phase 5. Cần thiết để Disconnect/đóng window không chờ read timeout 30 giây. Không sửa TCP codec, DTO, upload/download service, resume algorithm, server hoặc dependency Maven.
+## C. Kiến trúc, trạng thái và luồng
 
-## C. Tích hợp service và xử lý state
-
-```mermaid
-flowchart LR
-    Panels[Panels và JTable trên EDT] --> Controller[ClientController]
-    Controller --> Worker[Executor tuần tự]
-    Worker --> Adapter[ServiceClientBackend]
-    Adapter --> TCP[TcpClient và LIST_FILES]
-    Adapter --> Transfer[UploadService / DownloadService / Resume]
-    Transfer --> Callback[Progress callback]
-    Callback --> EDT[invokeLater / immutable snapshot]
-    EDT --> Panels
+```text
+ConnectionPanel -> ClientController (EDT-owned presentation state)
+                -> single worker -> ServiceServerDiscovery -> DiscoveryClient
+                -> immutable results -> invokeLater -> JComboBox
+User selects result -> IP/port fields -> user clicks Connect
+                    -> ServiceClientBackend -> existing TcpClient -> LIST_FILES
+Upload / Download / Resume -> existing services -> callbacks -> EDT -> Transfers
+Cancel / window close -> control executor -> close current UDP/TCP socket
 ```
 
-- Một executor daemon chạy connect/list/hash/upload/download/resume; `busy` được đặt trên EDT trước khi submit nên không thể khởi động transfer thứ hai hoặc refresh trong khi truyền.
-- Mọi thay đổi model/controller và Swing component chạy trên EDT. Worker gửi kết quả bằng `invokeLater`; progress giới hạn khoảng một lần mỗi 80 ms, cộng sự kiện verify/completion. Không gửi callback cho từng byte, không giả lập tiến độ.
-- Control executor riêng đóng socket khi bấm Disconnect trong transfer; không cần chờ khóa `TcpClient.exchange()`. Không gửi CANCEL hoặc frame mới.
-- Đóng window đang bận hỏi người dùng rồi dispose. Socket đóng trên control thread; worker shutdown có thứ tự, không interrupt FileChannel đang ghi checkpoint. Worker/control đều daemon; kết quả muộn không cập nhật cửa sổ đã đóng. `termination()` cho phép kiểm thử chờ tài nguyên mạng được giải phóng, không chặn EDT.
-- Không làm I/O mạng, full hash, đọc/ghi file lớn trên EDT. Local chooser là Swing chuẩn. Kích thước nguồn đọc trên worker và hiển thị trước khi tính hash.
+- Network I/O, enumeration interface, hash và file I/O lớn chạy ngoài EDT. Một worker xử lý tuần tự các thao tác; không thể vừa Discover vừa Connect/Refresh/truyền file hoặc mở transfer thứ hai.
+- Discover nhận UDP port 1..65535; mặc định 49001. Service giữ policy v1 800 ms/lần, tối đa 3 lần, broadcast theo interface. Adapter chỉ gọi API có sẵn.
+- Trong Discovering, Connect/Upload/Download/Refresh và chọn endpoint bị khóa; Cancel search được bật. Khi có kết quả, combo vẫn ở placeholder, **không tự chọn hoặc kết nối dù chỉ có một server**.
+- Người dùng chọn một endpoint thì IP/TCP port mới được điền. Vẫn phải bấm Connect. Sửa IP/TCP port thủ công sẽ bỏ lựa chọn combo, không tự ghi đè nội dung người dùng vừa nhập.
+- Không tìm thấy server: trạng thái Disconnected, thông báo dùng IP thủ công, Connect vẫn sử dụng được. Lỗi discovery: Failed và thông báo fallback, không làm hỏng chức năng TCP.
+- Khi đã Connected, Discover/UDP port/combo bị khóa; Disconnect trước khi tìm/chuyển server. Cách này tránh để việc chọn discovery vô tình đổi phiên đang truyền hoặc resume.
+- Cancel chạy trên control executor, đóng search hiện tại và không gửi thông điệp CANCEL lên wire. Giữ busy đến khi control task hoàn tất, tránh Cancel cũ đóng socket của search mới. Kết quả của search đã hủy không được đưa vào combo; có thể tìm lại bằng instance DiscoveryClient mới.
+- Đóng window khi Discovering không hỏi giữ checkpoint vì chưa có transfer. Search bị đóng; kết quả muộn không render lên window đã dispose. Đóng trong transfer vẫn dùng xác nhận giữ checkpoint và cơ chế interruption cũ.
 
-State giao diện gồm Disconnected, Connecting, Connected, Uploading, Downloading, Verifying, Interrupted, Resuming, Completed, Failed. Discovering không xuất hiện vì discovery chưa triển khai. `connected` và `busy` tách khỏi trạng thái transfer: ví dụ Completed vẫn có socket và cho phép Refresh.
+UI phân biệt Disconnected, Discovering, Connecting, Connected, Uploading, Downloading, Verifying, Interrupted, Resuming, Completed và Failed. Nhãn kết nối hiển thị Connected khi socket đang dùng; trạng thái tác vụ nằm ở footer và bảng transfer.
 
-**Connect/list:** validate host/port tại controller → `TcpClient.connect()` ở worker → `listFiles()` → table thực tế. Danh sách rỗng hiển thị “No files”. Bảng sắp xếp số theo numeric size, giữ fileId phân biệt tên trùng, có SHA-256 ở chi tiết. Download chỉ enabled sau khi chọn hàng, dùng đúng model index khi bảng được sort.
+LIST_FILES, hash verification, no-overwrite và stop-and-wait giữ nguyên service. Sau upload thành công tự refresh danh sách. Download chỉ gợi ý tên basename hợp lệ; người dùng chọn full path, service từ chối ghi đè file cũ. Tên chứa đường dẫn, ký tự điều khiển, ký tự Windows không hợp lệ hoặc CON/NUL/COM1/LPT1... dùng `download-<fileId>.bin`.
 
-**Upload:** chọn nguồn → hiển thị tên/dung lượng và bước tính SHA-256 → gọi UploadService → progress từ ACK thật → chỉ Completed sau khi service trả kết quả đã xác nhận TRANSFER_COMPLETE. Upload thành công tự refresh; nếu refresh riêng thất bại vẫn giữ transfer Completed và log lỗi refresh, không đảo ngược kết quả upload.
-
-**Download:** chọn fileId → chọn đường dẫn đích local → gọi DownloadService → nhận progress → Verifying → Completed sau khi service verify/publish và gửi COMPLETE theo v1. Tên gợi ý mặc định `download-<fileId>.bin`; người dùng đặt tên mong muốn. Không dùng server name làm đường dẫn. Không ghi đè file có sẵn. Cơ chế publish/hard link, hash và `.part` giữ nguyên Phase 4/5.
-
-Progress UI chưa hoàn tất bị chặn tối đa 99.9%, kết quả trả về thành công mới đặt 100%/Completed. Upload backend hiện không có callback riêng đúng thời điểm server bắt đầu hash cuối; UI tiếp tục Uploading trong thời gian đợi xác nhận, không suy đoán đã thành công. Download có callback VERIFYING thực tế. Tốc độ tính từ delta byte/time của lần thử hiện tại, không cộng offset đã resume vào throughput của lần thử mới.
-
-**Resume:** `TransferInterruptedException` cung cấp transferId, checkpoint, offset cho hàng Interrupted. Không xóa tiến độ khi disconnect/reconnect. Người dùng Connect lại cùng host/port, chọn transfer rồi Resume. Adapter gọi `resumeUpload(id, source, listener)` hoặc `resumeDownload(id, checkpoint, listener)`; không tạo INIT thay thế. Nếu resume query bị timeout hoặc SERVER_BUSY sau số retry hữu hạn, hàng vẫn Interrupted để thử lại; lỗi integrity/terminal chuyển Failed. Server khác endpoint bị chặn ở UI để tránh dùng nhầm transferId.
-
-Thông báo lỗi dùng mapping có ý nghĩa cho connect/refused/timeout/disconnect, file tồn tại/không tìm thấy, permission denied, hash mismatch, transfer changed/expired, server busy. JOptionPane không hiện stack trace; console logger giữ exception cho debug, log UI giữ tóm tắt và thông tin transfer/checkpoint local.
+Transfer chỉ Completed/100% sau khi service trả thành công. Upload chờ TRANSFER_COMPLETE của server; download theo v1 tự verify/publish rồi gửi COMPLETE, không thêm ACK mới. Interrupted giữ ID/checkpoint/bytes, percentage khớp offset đã ghi, speed hiển thị 0. Resume chỉ bật khi reconnect đúng host/port gốc; controller vẫn validate độc lập.
 
 ## D. Build và chạy
 
-Từ root repository, PowerShell:
+Tại root repository:
 
 ```powershell
 .\build.ps1 compile test package
-# Terminal 1: giữ server chạy trong toàn bộ demo resume
-.\run-server.ps1
-# Terminal 2: mở desktop client
-.\run-swing.ps1
-# Kết nối LAN hoặc đổi cổng/thư mục checkpoint:
-.\run-swing.ps1 -ServerHost 192.168.1.10 -Port 49000 -CheckpointDirectory runtime/client
+# Terminal 1: TCP và UDP trên các card mạng
+.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -UdpPort 49001
+# Terminal 2
+.\run-swing.ps1 -UdpPort 49001
 ```
 
-Script tái sử dụng `scripts/java-launch.ps1` truyền tham số Unicode an toàn trên Windows; không dùng dependency mới. Có entry point `vn.edu.lanfileshare.client.ui.ClientSwingMain [host] [port] [checkpointDirectory]`. Khi chạy Java trực tiếp cần classpath gồm client/common và Jackson như script hiện có. API entry point mặc định dùng thư mục user home `.lan-file-sharing/client`; script mặc định runtime/client trong repository, ngoài source.
+Trong cửa sổ: Discover -> chọn endpoint -> Connect. Sau đó dùng Server files để Upload/Download, Transfers để xem progress và Resume, Activity log để xem diễn biến.
 
-Không tự connect khi mở cửa sổ: kiểm tra IP/port rồi bấm Connect. Nếu server cũ vẫn chạy JAR trước Phase 5, dừng bằng Ctrl+C và khởi động lại bản đã build trước buổi báo cáo.
+UDP port khác mặc định: đổi cả server `-UdpPort` và ô UDP port trên UI hoặc `run-swing.ps1 -UdpPort`. TCP port được lấy từ kết quả discovery; vẫn có thể nhập IP/TCP port thủ công. Discovery không thay thế việc mở firewall cho TCP; UDP và TCP là hai cổng riêng.
 
-## E. Bằng chứng kiểm thử
+Entry point: `vn.edu.lanfileshare.client.ui.ClientSwingMain [host] [tcpPort] [checkpointDirectory] [udpPort]`. Script giữ cơ chế Unicode-safe launcher đã có. API entry point mặc định checkpoint ở user home; script mặc định runtime/client. Không thêm dependency UI ngoài Java Swing.
 
-Đã chạy `build.ps1 compile`, test riêng `ClientControllerIntegrationTest,UiModelsTest`, test riêng `DesktopSmokeTest`, và toàn reactor `build.ps1 compile test package`.
+## E. Kiểm thử thực tế
 
-Toàn suite có **128 test**: common 14, server 25, client 89, không failure/error/skipped trên lần chạy toàn bộ thành công. Bao gồm 118 test backend cũ và 10 test mới (controller 6, model/error 3, desktop 1). JDK 23 compile release 21, Maven 3.9.11. Xem XML/text tại `source/*/target/surefire-reports/` và log lần build cuối `runtime/phase8-final-build.log`.
+Đã chạy compile; bộ test UI tập trung; toàn reactor `build.ps1 compile test package`. Kết quả full: **168 test PASS**, không failure/error/skipped, gồm common 19, server 33, client 116. BUILD SUCCESS lúc `2026-11-09T23:52:22+07:00`, 02:06 phút, JDK 23 compile release 21. Log: `runtime/ui-complete-build.log`, test UI ban đầu: `runtime/ui-discovery-tests.log`, JUnit reports: `source/*/target/surefire-reports/`.
 
-Build cuối BUILD SUCCESS lúc `2026-11-04T01:33:06+07:00`, 01:11 phút. `run-swing.ps1` cũng đã được gọi với `JAVA_TOOL_OPTIONS=-Djava.awt.headless=true` để kiểm tra classpath/entry point: exit 0 và thông báo yêu cầu display đúng dự kiến; kiểm tra JFrame thật được thực hiện riêng trong DesktopSmokeTest, không suy diễn từ lần gọi headless.
-
-Sau chỉnh nhỏ tự scroll đến transfer mới, đã chạy lại `build.ps1 package -Dtest=DesktopSmokeTest,UiModelsTest -Dsurefire.failIfNoSpecifiedTests=false`: 4 test UI PASS, reactor BUILD SUCCESS lúc `01:35:55+07:00`. Log: `runtime/phase8-layout-check.log`.
-
-Các bằng chứng mới qua **socket thật**, không mock networking:
+Sau chỉnh nhỏ nhãn trạng thái và cách trình bày, đã chạy lại package cùng `DiscoveryControllerIntegrationTest,DiscoveryUiModelsTest,DesktopSmokeTest,UiModelsTest`: **13 test PASS**, BUILD SUCCESS lúc `23:54:25+07:00`. Log `runtime/ui-final-check.log`.
 
 | Kiểm tra | Bằng chứng |
 | --- | --- |
-| Upload/list/download 1 MiB qua controller | So sánh byte-for-byte và SHA-256; table có metadata thật |
-| Upload 100 MiB | Byte gốc khớp completed file; SHA-256 `ff8466658d5cc7786fd9e602a041f803702cfddca510cdd27cb28bc37244d1e0` |
-| EDT trong lúc truyền file lớn | Gate worker có xác định; EDT xử lý heartbeat dưới timeout 2 giây, không nhận thao tác thứ hai |
-| Ngắt/resume upload 10 MiB | Gửi 3,145,728 byte trước ngắt và 7,340,032 byte sau resume, cùng transferId |
-| Ngắt/resume download 10 MiB | Nhận 3,145,728 + 7,340,032 byte; final bytes/hash khớp |
-| Server busy khi resume | Socket khác giữ lease thật; retry hết giới hạn vẫn giữ hàng có thể Resume; nhả lease rồi resume thành công |
-| Server im lặng | Đóng controller giải phóng receive/socket trong timeout 3 giây thay vì đợi read timeout 30 giây |
-| Lỗi/guards | Port sai, refused, refresh offline, chưa chọn download, destination conflict không làm hỏng file cũ |
-| Cửa sổ thật | Display khả dụng; mở JFrame, bấm Connect/Upload/Download, chọn nguồn/đích bằng JFileChooser, verify 1 MiB, resize, Disconnect và đóng window |
+| Discover nhiều server | Hai UDP responder và TCP server thật, port động; không tự chọn, không có kết nối TCP trước khi caller Connect |
+| Endpoint được chọn | Chọn đúng server thứ hai, upload vào catalog thứ hai, server thứ nhất vẫn rỗng |
+| Discovery -> transfer | Upload/download 1 MiB, byte-for-byte và SHA-256 khớp |
+| Không có phản hồi/lỗi interface | UI về trạng thái có thể nhập IP; TCP LIST_FILES thủ công vẫn hoạt động; có thể tìm lại |
+| Cancel | Gói request thật đã đến UDP peer rồi mới hủy; không báo Failed giả, không giữ kết quả hủy, tìm lại được |
+| Close đang tìm | Đóng receive UDP, dispose window/test view, không render kết quả muộn |
+| EDT | Gate ở worker có xác định, EDT vẫn xử lý heartbeat; thao tác Connect/Upload/Refresh chồng lấn bị chặn |
+| Model/view | Combo không auto-select, sửa IP không bị render ghi đè, các nút đúng trạng thái, tên file unsafe có fallback, Resume chỉ cho endpoint gốc |
+| JFrame thật | Click Discover -> chọn combo -> Connect -> JFileChooser upload/download; verify 1 MiB; resize 1000x680 và 1180x900; Disconnect và close |
+| Regression | Các test TCP/UDP/backend cũ, controller upload 100 MiB và resume upload/download 10 MiB vẫn PASS |
 
-`DesktopSmokeTest` thao tác Swing component và file chooser thật, tự xác nhận các message dialog trong test; không thay backend. Ảnh render content của cửa sổ sau upload/download: `source/client/target/swing-phase8.png`. Test này tự skip nếu môi trường headless; các test controller/model vẫn chạy không cần JFrame, toàn bộ I/O transfer vẫn dùng service/socket thật.
+Test mới dùng service/UDP/TCP thật; provider targets localhost giúp chạy có xác định, không thay networking bằng mock. Fault injection chỉ dành cho lỗi interface và gate điều phối worker. Không dùng Thread.sleep ngẫu nhiên để tạo gián đoạn.
 
-Một lần capture build bằng PowerShell 5.1 `*>` gặp NativeCommandError khi Maven ghi log lên stderr; đã đổi harness capture sang Python subprocess (không đổi build.ps1 hoặc backend). Lệnh build toàn bộ thông thường chạy được; không dùng lỗi capture này làm lý do bỏ test.
+Desktop marker: `SWING_DESKTOP_PASS display=true discoverySelection=true uploadDownloadBytes=1048576 byteForByte=true`. Ảnh content của cửa sổ thật: `source/client/target/swing-client-complete.png`. Test desktop tự skip nếu headless, còn controller/model tests vẫn chạy được; trên lần full ở đây desktop có display và không skip.
 
-## F. Checklist demo và giới hạn còn lại
+## F. Checklist demo và giới hạn
 
-Chuẩn bị file nhị phân 100 MiB có sẵn trên máy trước buổi demo. Không cần đăng ký file bằng run-catalog để có dữ liệu: upload qua UI sẽ đưa file completed vào table.
+1. Server bind 0.0.0.0, chạy UI; bấm Discover, kiểm tra Discovering và UI vẫn thao tác/resize được.
+2. Chọn đúng IP/card mạng mong muốn rồi Connect; nhiều server phải có lựa chọn rõ ràng. Không có server thì nhập IP/port thủ công.
+3. Upload file, kiểm tra tab Transfers tự mở và chỉ Completed sau xác nhận; trở lại Server files để Download.
+4. Chọn tên đích mới, kiểm tra file cũ không bị ghi đè; mở Activity log để xem transfer ID/hash/status.
+5. Ngắt trong transfer đủ lớn; reconnect đúng server và Resume. Kết nối server khác thì nút Resume cho hàng cũ phải bị khóa.
+6. Thử Cancel search, Discover lại, đóng window khi đang tìm; kiểm tra không có process bị treo.
+7. Kiểm thử thủ công thêm trên hai máy LAN, firewall/AP isolation, adapter VPN, ACL từ chối ghi thực tế và DPI màn hình dùng báo cáo. Kết quả automated ở đây dùng loopback và targets có kiểm soát, không tự khẳng định mọi LAN đều cho broadcast qua.
 
-Workspace hiện đã có `runtime/demo/sample-1MiB.bin` và `runtime/demo/sample-100MiB.bin` để chọn trong JFileChooser. Đây là dữ liệu demo local bị Git ignore, không đưa file 100 MiB vào commit và không phải dependency của ứng dụng.
+Lịch sử transfer của UI hiện nằm trong cùng lần mở cửa sổ; chưa có màn hình import checkpoint sau khi mở lại app. Checkpoint backend vẫn giữ trên đĩa. Session server chỉ trong cùng tiến trình, TTL 24 giờ; không phục hồi sau server restart. Không thêm HTTP, CANCEL hoặc protocol mới. Upload chưa có callback riêng ngay khi server bắt đầu hash cuối nên UI giữ Uploading trong lúc chờ xác nhận, không đoán đã thành công.
 
-1. Chạy server, mở `run-swing.ps1`, bấm Connect tới `127.0.0.1:49000`. Kiểm tra Connected và danh sách/no files.
-2. Upload file 1 MiB, sau đó 100 MiB. Quan sát tên, size, progress, speed, trạng thái và auto refresh. Di chuyển/resize window khi truyền để kiểm tra tương tác bằng tay.
-3. Chọn file, Download, nhập tên đích mới và đợi SHA-256 verified. Thử lại cùng đích: phải báo lỗi, file cũ giữ nguyên.
-4. Với file đủ lớn, bấm Disconnect khi đang truyền. Chờ Interrupted/checkpoint saved, bấm OK, Connect lại cùng IP/port, chọn hàng Interrupted rồi Resume. Không khởi động lại server.
-5. Thử cả upload và download resume; kiểm tra Transfer ID không đổi và log giữ offset. Truyền localhost có thể nhanh: dùng file lớn hoặc hai máy LAN để có thời gian bấm. Test tự động đã ngắt theo callback xác định, không dựa vào thao tác tay.
-6. Nhập port không phải số, cổng chưa có server; kiểm tra thông báo. Download/Refresh bị disable khi không đủ điều kiện; controller cũng có guard cho lời gọi trực tiếp.
-7. Đóng window lúc idle và đang bận (xác nhận hộp thoại), kiểm tra process kết thúc. Thử trên máy Windows thực tế với folder không có quyền ghi, mạng LAN/firewall và DPI màn hình dùng báo cáo.
+## G. API cho lần tích hợp tiếp theo
 
-Các bước người dùng bấm chuột trực tiếp trên hai máy LAN, ACL từ chối ghi thực tế và nhiều mức DPI vẫn cần kiểm tra thủ công; không đánh dấu những phần đó đã PASS chỉ từ test loopback. Automated desktop đã chạy trên display thật nhưng không thay thế đánh giá UX của người dùng.
-
-Giới hạn kế thừa: session server chỉ trong cùng tiến trình, TTL 24 giờ; không có resume sau server restart. Lịch sử UI hiện trong bộ nhớ cửa sổ, chưa có màn hình import checkpoint sau khi khởi động lại app; checkpoint Phase 5 vẫn giữ trên đĩa, không bị xóa. Resume qua UI hỗ trợ reconnect trong cùng lần mở app. Không thêm protocol CANCEL, quota, UDP, HTTP hoặc tính năng backend mới. Download completed vẫn theo semantics v1: client verify/publish và gửi COMPLETE, không có server ACK mới.
-
-## G. Interface mở rộng
-
-- `ClientBackend` là ranh giới service để gắn discovery sau này mà không đưa stream/frame vào UI.
-- `ClientController` cung cấp connect, disconnect, refresh, upload, download, resume, snapshot, close và termination. Các thao tác/snapshot gọi trên EDT; backend chạy ở executor.
-- `ClientView` nhận render/log/notice/closed trên EDT; `UiSnapshot`/`TransferItem` immutable.
-- Khi Phase discovery có service thực tế, bổ sung worker Discover và lựa chọn endpoint tường minh; không tự connect server đầu tiên.
+- `ClientController.discover(String udpPort)`, `selectServer(DiscoveredServer)`, `cancelDiscovery()` gọi trên EDT.
+- `UiSnapshot.discoveredServers()` và `selectedServer()` là dữ liệu immutable cho view; constructor tám tham số cũ giữ tương thích.
+- `ServerDiscovery` là ranh giới điều phối UI; `ServiceServerDiscovery` dùng DiscoveryClient và BroadcastTargets đã có, chỉ giữ lifecycle của search hiện tại.
+- `MainFrame(backend, discovery, host, tcpPort, udpPort)` hỗ trợ cấu hình/test; constructor cũ vẫn dùng discovery mặc định.
+- Các API connect/refresh/upload/download/resume và ProgressListener hiện có được giữ nguyên. Không có stream, FrameCodec hoặc FILE_CHUNK đi vào Swing panels.
 
 ## H. Kết luận
 
-**READY cho bản Swing demo các backend Phase 1–5 đang có**, với giới hạn bỏ qua discovery và checklist LAN/UX thủ công nêu trên.
+**READY cho giao diện tích hợp các chức năng hiện có**, với kiểm thử LAN/DPI thủ công và giới hạn persistence nêu trên. Thay đổi được triển khai trên nhánh TV4.

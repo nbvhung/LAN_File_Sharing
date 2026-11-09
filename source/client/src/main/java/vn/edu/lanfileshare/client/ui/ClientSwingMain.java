@@ -12,10 +12,13 @@ public final class ClientSwingMain {
 
     public static void main(String[] arguments) throws Exception {
         String[] args = CliArguments.decode(arguments);
-        if (args.length > 3)
-            throw new IllegalArgumentException("Usage: ClientSwingMain [host] [port] [checkpointDirectory]");
+        if (args.length > 4)
+            throw new IllegalArgumentException("Usage: ClientSwingMain [host] [port] [checkpointDirectory] [udpPort]");
         Endpoint endpoint = new Endpoint(args.length > 0 ? args[0] : "127.0.0.1",
                 args.length > 1 ? Integer.parseInt(args[1]) : 49000);
+        int udpPort = args.length > 3 ? Integer.parseInt(args[3])
+                : vn.edu.lanfileshare.common.protocol.DiscoveryProtocol.DEFAULT_UDP_PORT;
+        new Endpoint("discovery", udpPort);
         if (GraphicsEnvironment.isHeadless()) {
             System.err.println("Swing requires a desktop display. Use run-client.ps1 for the CLI.");
             return;
@@ -26,7 +29,7 @@ public final class ClientSwingMain {
         SwingUtilities.invokeLater(() -> {
             try {
                 UiTheme.install();
-                new MainFrame(backend, endpoint.host(), endpoint.port()).setVisible(true);
+                new MainFrame(backend, new ServiceServerDiscovery(), endpoint.host(), endpoint.port(), udpPort).setVisible(true);
             } catch (Exception ex) {
                 System.getLogger(ClientSwingMain.class.getName()).log(System.Logger.Level.ERROR, "Cannot start desktop",
                         ex);

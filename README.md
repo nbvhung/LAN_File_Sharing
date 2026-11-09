@@ -1,5 +1,20 @@
 # Chia sẻ file trong mạng LAN
 
+## Giao diện desktop hoàn chỉnh (TV4)
+
+```powershell
+# Terminal 1: server nhận TCP và UDP trên các card mạng
+.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -UdpPort 49001
+# Terminal 2: mở giao diện
+.\run-swing.ps1 -UdpPort 49001
+```
+
+Bấm **Discover** → chọn một dòng trong danh sách server → **Connect**. Discovery không tự chọn hoặc tự kết nối, kể cả khi chỉ tìm được một server. Có thể sửa **UDP port**, bấm **Cancel search**, hoặc nhập **Server IP / TCP port** thủ công nếu không tìm thấy server. Khi đã Connect, bấm Disconnect trước khi tìm/chuyển sang server khác.
+
+Tab **Server files** có Refresh, Upload file và Download selected. Khi bắt đầu upload/download/resume, UI mở tab **Transfers** để hiện tiến độ, tốc độ và trạng thái; xem log ở tab **Activity log**. Download gợi ý tên gốc nếu đó là basename an toàn và vẫn không ghi đè file cũ. Để resume, reconnect đúng server rồi chọn hàng Interrupted trong Transfers và bấm Resume selected.
+
+Chạy build sau khi lấy code mới: `.\build.ps1 compile test package`. Xem [báo cáo UI, API và checklist](docs/phase8.md). Phần UI thuộc **TV4** theo phân công đã điều chỉnh.
+
 ## Tìm server qua UDP Discovery
 
 Server tự chạy UDP discovery cùng TCP. Cổng mặc định: TCP **49000**, UDP **49001**; cả hai cấu hình được.
@@ -35,7 +50,7 @@ Trên LAN tin cậy dùng profile Private, nếu firewall chặn UDP thì mở P
 New-NetFirewallRule -DisplayName 'LAN File Sharing UDP Discovery 49001' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 49001 -Profile Private -RemoteAddress LocalSubnet
 ```
 
-Quy tắc TCP 49000 trong hướng dẫn LAN bên dưới vẫn cần cho truyền file. Broadcast không được bảo đảm đi qua router hoặc Wi-Fi guest/client isolation. **Swing hiện vẫn nhập IP/port thủ công**; phần này cung cấp discovery API/CLI, chưa thêm nút Discover vào giao diện. Chi tiết API, lifecycle và kiểm thử: [docs/phase7.md](docs/phase7.md).
+Quy tắc TCP 49000 trong hướng dẫn LAN bên dưới vẫn cần cho truyền file. Broadcast không được bảo đảm đi qua router hoặc Wi-Fi guest/client isolation. Swing đã có **Discover**, danh sách chọn server và **Cancel search**; nhập IP/port thủ công vẫn hoạt động. Chi tiết API, lifecycle và kiểm thử: [docs/phase7.md](docs/phase7.md).
 
 ## Định dạng source code
 
@@ -132,7 +147,7 @@ Kết quả `FILE_LIST ... count=...` xác nhận client đã trao đổi reques
 | PowerShell chặn chạy script | Với script trong repository tin cậy, có thể chạy riêng bằng `powershell -NoProfile -ExecutionPolicy Bypass -File .\run-swing.ps1 -ServerHost 127.0.0.1 -Port 49000`; không cần đổi execution policy toàn máy. |
 | Không thấy file trên bảng | Server mới có thể rỗng; upload qua UI rồi Refresh. File chưa hoàn tất không được công bố. |
 
-Để chạy giữa hai máy LAN, dùng server `.\run-server.ps1` (mặc định bind `0.0.0.0`), nhập **IP LAN thực của máy server** trên client và cho phép cổng TCP qua firewall. `127.0.0.1` chỉ dùng khi server và client cùng máy. UDP Discovery đã có qua `run-discovery.ps1`; Swing hiện vẫn nhập IP/port thủ công.
+Để chạy giữa hai máy LAN, dùng server `.\run-server.ps1` (mặc định bind `0.0.0.0`), nhập **IP LAN thực của máy server** trên client và cho phép cổng TCP qua firewall. `127.0.0.1` chỉ dùng khi server và client cùng máy. UDP Discovery đã có qua `run-discovery.ps1`; Swing cũng có nút Discover; có thể nhập IP/port thủ công bất cứ khi nào không tìm kiếm hoặc truyền file.
 
 ## Kết nối nhiều máy trong mạng LAN
 
@@ -213,7 +228,7 @@ Nếu `TcpTestSucceeded` là False: kiểm tra server còn chạy, bind `0.0.0.0
 
 Nhập IP/port rồi Connect; chọn Upload file hoặc chọn hàng trên bảng để Download. Khi transfer Interrupted, Connect lại cùng server, chọn hàng trong Transfers và bấm Resume. Giao diện hiển thị progress/speed, verify SHA-256, trạng thái và log; một transfer chạy tại một thời điểm. Không ghi đè file đích có sẵn.
 
-Đã có test cửa sổ thật với file chooser/upload/download 1 MiB và test controller qua socket thật với file 100 MiB, ngắt/resume hai chiều. UDP Discovery backend đã có qua CLI; Swing hiện dùng IP/port thủ công. Xem [kiến trúc, kết quả test và checklist báo cáo Phase 8](docs/phase8.md). Nhánh triển khai `feature/tv3-client-transfer`.
+Đã có test cửa sổ thật với file chooser/upload/download 1 MiB và test controller qua socket thật với file 100 MiB, ngắt/resume hai chiều. Swing đã tích hợp UDP Discover và giữ fallback IP/port thủ công. Xem [kiến trúc, kết quả test và checklist báo cáo Phase 8](docs/phase8.md). Phần UI thuộc TV4 và được hoàn thiện trên `feature/tv4-ui-discovery`.
 
 ## Phase 5: Resume upload/download
 
@@ -245,7 +260,8 @@ Server TCP lưu file tập trung; client Java Swing xem danh sách, upload, down
 | `source/common` | TV1, phối hợp TV2/TV3 | Frame codec, message, lỗi, hợp đồng giao thức |
 | `source/server/network` | TV1 | TCP accept loop, phiên và dispatcher |
 | `source/server/transfer`, `storage` | TV2 | Truyền file, catalog, metadata, `.part`, hash/resume |
-| `source/client/network`, `transfer`, `ui` | TV3 | TCP client, tiến độ, reconnect, Swing |
+| `source/client/network`, `transfer` | TV3 | TCP client, tiến độ, reconnect |
+| `source/client/ui` | TV4 | Java Swing desktop, tích hợp discovery và service |
 | `source/server/discovery`, `http`; `source/client/discovery`; `source/experiments` | TV4 | UDP, HTTP GET, đo tải/CSV |
 | `statics` | Cả nhóm | Sơ đồ, ảnh demo, kết quả thực nghiệm |
 

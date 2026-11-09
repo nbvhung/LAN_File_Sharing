@@ -15,13 +15,22 @@ public final class MainFrame extends JFrame implements ClientView {
     private final TransferPanel transfers = new TransferPanel();
     private final LogPanel logs = new LogPanel();
     private final JLabel footer = new JLabel("Ready");
+    private final JTabbedPane workspace = new JTabbedPane();
+    private boolean wasBusy;
+    private boolean wasConnected;
+    private int transferCount;
     private final ClientController controller;
 
     public MainFrame(ClientBackend backend, String host, int port) {
+        this(backend, new ServiceServerDiscovery(), host, port,
+                vn.edu.lanfileshare.common.protocol.DiscoveryProtocol.DEFAULT_UDP_PORT);
+    }
+
+    public MainFrame(ClientBackend backend, ServerDiscovery discovery, String host, int port, int udpPort) {
         super("LAN File Sharing");
         ClientController.requireEdt();
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
-        setMinimumSize(new Dimension(980, 740));
+        setMinimumSize(new Dimension(980, 640));
         setSize(1180, 900);
         JPanel root = new JPanel(new BorderLayout(0, 12));
         root.setBorder(new EmptyBorder(20, 24, 14, 24));
@@ -42,32 +51,21 @@ public final class MainFrame extends JFrame implements ClientView {
         header.add(branding, BorderLayout.NORTH);
         header.add(connection, BorderLayout.SOUTH);
         root.add(header, BorderLayout.NORTH);
-        JSplitPane workspace = new JSplitPane(JSplitPane.VERTICAL_SPLIT, serverFiles, transfers);
-        workspace.setResizeWeight(0.53);
-        workspace.setDividerLocation(280);
-        JSplitPane body = new JSplitPane(JSplitPane.VERTICAL_SPLIT, workspace, logs);
-        body.setResizeWeight(0.8);
-        body.setDividerLocation(530);
-        workspace.setBorder(null);
-        body.setBorder(null);
-        serverFiles.setMinimumSize(new Dimension(200, 150));
-        transfers.setMinimumSize(new Dimension(200, 180));
-        logs.setMinimumSize(new Dimension(200, 110));
-        body.addComponentListener(new ComponentAdapter() {
-            @Override
-            public void componentResized(ComponentEvent event) {
-                body.setDividerLocation(Math.max(workspace.getMinimumSize().height, Math.min(body.getDividerLocation(),
-                        body.getHeight() - logs.getMinimumSize().height - body.getDividerSize())));
-                workspace.setDividerLocation(Math.min(workspace.getDividerLocation(),
-                        workspace.getHeight() - transfers.getMinimumSize().height - workspace.getDividerSize()));
-            }
-        });
-        root.add(body, BorderLayout.CENTER);
+        workspace.setName("workspaceTabs");
+        workspace.addTab("Server files", serverFiles);
+        workspace.addTab("Transfers", transfers);
+        workspace.addTab("Activity log", logs);
+        root.add(workspace, BorderLayout.CENTER);
         footer.setForeground(UiTheme.MUTED);
         root.add(footer, BorderLayout.SOUTH);
         connection.host.setText(host);
         connection.port.setText(Integer.toString(port));
-        controller = new ClientController(backend, this);
+        connection.udpPort.setText(Integer.toString(udpPort));
+        controller = new ClientController(backend, discovery, this);
+        connection.onSelection(controller::selectServer);
+        connection.discover.addActionListener(event -> controller.discover(connection.udpPort.getText()));
+        connection.udpPort.addActionListener(event -> controller.discover(connection.udpPort.getText()));
+        connection.cancelDiscovery.addActionListener(event -> controller.cancelDiscovery());
         connection.connect.addActionListener(event -> connect());
         connection.host.addActionListener(event -> connect());
         connection.port.addActionListener(event -> connect());
@@ -83,7 +81,7 @@ public final class MainFrame extends JFrame implements ClientView {
             @Override
             public void windowClosing(WindowEvent event) {
                 UiSnapshot value = controller.snapshot();
-                if (value.busy() && JOptionPane.showConfirmDialog(MainFrame.this,
+                if (value.busy() && value.state() != UiState.DISCOVERING && JOptionPane.showConfirmDialog(MainFrame.this,
                         "A task is active. Close the connection and keep any available checkpoint?",
                         "Close application", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION)
                     return;
@@ -91,7 +89,7 @@ public final class MainFrame extends JFrame implements ClientView {
             }
         });
         setLocationRelativeTo(null);
-        logs.append("Ready. Connect using the server IP and TCP port. One transfer runs at a time.");
+        logs.append("Ready. Discover and choose a server, or enter an IP/port. One transfer runs at a time.");
     }
 
     private void connect() {
@@ -115,7 +113,7 @@ public final class MainFrame extends JFrame implements ClientView {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Save downloaded file (existing files are not overwritten)");
         // Server metadata is display-only: do not turn an untrusted name into a path.
-        chooser.setSelectedFile(new File("download-" + selected.fileId() + ".bin"));
+        chooser.setSelectedFile(new File(DownloadFileName.suggest(selected)));
         if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION)
             controller.download(selected, chooser.getSelectedFile().toPath());
     }
@@ -130,6 +128,20 @@ public final class MainFrame extends JFrame implements ClientView {
         connection.render(value);
         serverFiles.render(value);
         transfers.render(value);
+        workspace.setTitleAt(0, "Server files (" + value.files().size() + ")");
+        workspace.setTitleAt(1, "Transfers (" + value.transfers().size() + ")");
+        boolean transferring = switch (value.state()) {
+            case UPLOADING, DOWNLOADING, VERIFYING, RESUMING -> true;
+            default -> false;
+        };
+        if (value.busy() && transferring && (!wasBusy || value.transfers().size() > transferCount)) {
+            workspace.setSelectedComponent(transfers);
+        } else if (value.connected() && !wasConnected) {
+            workspace.setSelectedComponent(serverFiles);
+        }
+        wasBusy = value.busy();
+        wasConnected = value.connected();
+        transferCount = value.transfers().size();
         footer.setText(value.message());
         footer.setToolTipText(value.endpoint() == null ? null : value.endpoint().toString());
     }
