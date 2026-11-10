@@ -1,0 +1,65 @@
+{
+  "freshCheckout": "runtime/release-check-fh5uolk4",
+  "network": "LOCALHOST",
+  "jdk": "23.0.1",
+  "java21Runtime": "NOT_TESTED",
+  "tests": {
+    "PASS": 168,
+    "FAIL": 0,
+    "BLOCKED": 0
+  },
+  "checks": [
+    {
+      "name": "phase10-maven-clean",
+      "exitCode": 1,
+      "log": "runtime/phase10-maven-clean.log"
+    },
+    {
+      "name": "phase10-fresh-package",
+      "exitCode": 0,
+      "log": "runtime/phase10-fresh-package.log"
+    },
+    {
+      "name": "phase10-discovery",
+      "exitCode": 0,
+      "log": "runtime/phase10-discovery.log"
+    },
+    {
+      "name": "phase10-upload",
+      "exitCode": 0,
+      "log": "runtime/phase10-upload.log"
+    },
+    {
+      "name": "phase10-download",
+      "exitCode": 0,
+      "log": "runtime/phase10-download.log"
+    },
+    {
+      "name": "phase10-resume",
+      "exitCode": 0,
+      "log": "runtime/phase10-resume.log"
+    }
+  ],
+  "receiptNote": "Recovered after cleanup helper timed out; process return codes were observed in validation tool stdout; JUnit and markers re-read from actual files. No timing reconstructed.",
+  "bytecodeMajorVersions": [
+    65
+  ],
+  "instructionSha256": "054c503a2fb13f09104d4bbd6151d7bce5e36e1a48eca150bcb6e66edd925802",
+  "instructionMatchesOfficialContent": true,
+  "instructionSource": "https://github.com/hungdn1701/jnp-project-starter/blob/main/INSTRUCTION.md",
+  "resumeEvidence": [
+    "UPLOAD_RESUME transferId=265e0d35-1af4-409e-bf43-581586fcf27d fileId=5394da50-0e9a-4e32-9bdf-704a91025930 before=31457280 after=73400320 total=104857600 resumedFrom=31457280",
+    "DOWNLOAD_RESUME transferId=3b1e9b2f-6116-44df-9b72-635816ea182f before=41943040 after=62914560 total=104857600 resumedFrom=41943040",
+    "RESUME_DEMO_PASS size=104857600 sha256=498546e6a3a4a56ad16865f45c6ba1355875be19c9f85dd7b2f622cf9be17b4b"
+  ],
+  "cleanup": "Stopped only verified ServerMain PID 5964 after matching jcmd user.dir and main class; launcher may exit nonzero on intentional termination",
+  "roundTripSha256Verified": true,
+  "roundTripBytes": 104857600,
+  "packagedModules": [
+    "client",
+    "common",
+    "experiments",
+    "server"
+  ],
+  "serverPortClosed": true
+}

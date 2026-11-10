@@ -1,374 +1,335 @@
-# Chia sẻ file trong mạng LAN
+# LAN File Sharing — Chia sẻ file trong mạng LAN
 
-## Giao diện desktop hoàn chỉnh (TV4)
+## Giới thiệu và mục tiêu
 
-```powershell
-# Terminal 1: server nhận TCP và UDP trên các card mạng
-.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -UdpPort 49001
-# Terminal 2: mở giao diện
-.\run-swing.ps1 -UdpPort 49001
+Ứng dụng Java Swing chia sẻ file giữa nhiều TCP client và một server trong mạng nội bộ. Mục tiêu môn Lập trình mạng: thiết kế framing trên TCP stream, truyền binary có kiểm tra SHA-256, tiếp tục truyền sau ngắt kết nối, xử lý nhiều client và tìm server bằng UDP.
+
+Bản này có chức năng TCP/GUI đã triển khai; trạng thái kiểm chứng cuối cùng nằm trong [báo cáo release](docs/release-review.md). Chưa kết luận **RELEASE READY**: chưa có thông tin thành viên thật, chưa xác minh máy mới/JDK 21 runtime/LAN hai máy và source benchmark đang thiếu trong checkout.
+
+## Thành viên và đóng góp
+
+Chưa được cung cấp họ tên/MSSV xác thực. Nhóm phải điền trước khi nộp; không suy ra danh tính từ username máy hoặc Git author.
+
+| Nhãn phân công trong repository | Phạm vi có tài liệu |
+|---|---|
+| TV1 | TCP server, framing/common |
+| TV2 | Server transfer, storage, SHA-256/resume |
+| TV3 | TCP client và client transfer |
+| TV4 | Swing UI và UDP discovery |
+
+TV1–TV4 là **vai trò kế hoạch**, không khẳng định có bốn sinh viên. Starter quy định tối đa ba sinh viên/nhóm; cần ánh xạ vai trò vào danh sách thật và xác nhận đóng góp. Không quy phần HTTP/benchmark chưa có source thành thành tích đã hoàn thành.
+
+## Công nghệ
+
+Java 21 target; JDK 21+ để build; Swing/AWT; java.net TCP/UDP; NIO FileChannel; SHA-256; Jackson Databind 2.18.3; Maven 3.9+ multi-module; JUnit Jupiter 5.12.1; Surefire 3.5.2; Compiler Plugin 3.13.0. Launcher Windows dùng PowerShell 5.1+. Python 3.11+ chỉ cần cho công cụ xác minh release, không cần để chạy ứng dụng.
+
+## Chức năng thực tế
+
+- Kết nối IP/TCP port thủ công, LIST_FILES, refresh catalog.
+- Upload/download file binary, rỗng, tên Unicode; tên trùng phân biệt bằng UUID.
+- Kiểm tra size/SHA-256 trước công bố completed; file tạm không xuất hiện trong catalog.
+- Checkpoint, reconnect và resume hai chiều với offset hợp lệ trong cùng tiến trình server.
+- Executor server có giới hạn; mặc định 32 kết nối; một transfer trên một socket.
+- UDP discovery, lựa chọn server tường minh, hủy tìm kiếm và fallback nhập IP.
+- Swing hiển thị tiến độ, tốc độ, trạng thái, Activity log; hash/socket/file I/O chạy ngoài EDT.
+- Báo lỗi protocol/offset/hash/file I/O có kiểm soát; không ghi đè destination download.
+
+HTTP/browser download, TLS, đăng nhập, khôi phục resume sau server restart và benchmark có source tái lập **chưa hoàn thành trong checkout hiện tại**.
+
+## Kiến trúc Client–Server
+
+```mermaid
+flowchart LR
+  UI[Swing UI / ClientController] --> CTS[Client Transfer Service]
+  UI --> TC[TCP Client]
+  CTS --> TC
+  UI --> UDC[UDP Discovery Client]
+  TC <-->|TCP frames| TS[TCP Server]
+  TS --> RD[Request Dispatcher]
+  RD --> STS[Server Transfer Service]
+  RD --> CAT[FileCatalog]
+  STS --> CAT
+  STS --> FS[File Storage]
+  CAT --> FS
+  UDC <-->|UDP request / reply| UDS[UDP Discovery Server]
+  UDS -->|advertise TCP port| TS
 ```
 
-Bấm **Discover** → chọn một dòng trong danh sách server → **Connect**. Discovery không tự chọn hoặc tự kết nối, kể cả khi chỉ tìm được một server. Có thể sửa **UDP port**, bấm **Cancel search**, hoặc nhập **Server IP / TCP port** thủ công nếu không tìm thấy server. Khi đã Connect, bấm Disconnect trước khi tìm/chuyển sang server khác.
+Mỗi client có một reader cho socket, xử lý request tuần tự. Server dùng thread pool có giới hạn; transfer manager dùng lease theo session/transfer và khóa theo entry. Catalog chỉ chứa file completed đã kiểm chứng. Storage lưu theo UUID, không ghép tên file do client cung cấp vào đường dẫn.
 
-Tab **Server files** có Refresh, Upload file và Download selected. Khi bắt đầu upload/download/resume, UI mở tab **Transfers** để hiện tiến độ, tốc độ và trạng thái; xem log ở tab **Activity log**. Download gợi ý tên gốc nếu đó là basename an toàn và vẫn không ghi đè file cũ. Để resume, reconnect đúng server rồi chọn hàng Interrupted trong Transfers và bấm Resume selected.
+## TCP protocol format và message types
 
-Chạy build sau khi lấy code mới: `.\build.ps1 compile test package`. Xem [báo cáo UI, API và checklist](docs/phase8.md). Phần UI thuộc **TV4** theo phân công đã điều chỉnh.
+Frame: `[length: int32 big-endian][type: uint8][payload: length-1 bytes]`. Length bao gồm type, không bao gồm bốn byte header, hợp lệ 1..1048576. TCP không giữ ranh giới message; codec phải đọc đủ header/payload. Frame lỗi/type không biết/EOF giữa frame làm đóng socket.
 
-## Tìm server qua UDP Discovery
+Control payload là JSON UTF-8 tối đa 65536 byte, có `protocolVersion:1`, `requestId` UUID. Reply phải khớp requestId. FILE_CHUNK dùng binary: `transferId:16 bytes | offset:int64 | dataLength:int32 | data`, big-endian; dataLength 1..65536. File rỗng không gửi chunk.
 
-Server tự chạy UDP discovery cùng TCP. Cổng mặc định: TCP **49000**, UDP **49001**; cả hai cấu hình được.
+| Hex | Message | Ý nghĩa |
+|---|---|---|
+| 01 | LIST_FILES | Yêu cầu catalog completed |
+| 02 | FILE_LIST | files gồm fileId/name/size/sha256 |
+| 03 | UPLOAD_INIT | name, size, sha256 |
+| 04 | DOWNLOAD_INIT | fileId |
+| 05 | TRANSFER_READY | transferId, direction, fileId, name, size, sha256, nextOffset |
+| 06 | FILE_CHUNK | Binary data và offset |
+| 07 | PROGRESS_ACK | transferId, nextOffset bên nhận đã ghi |
+| 08 | RESUME_QUERY | transferId, direction, fileId, size, sha256 |
+| 09 | TRANSFER_COMPLETE | transferId, fileId, size, sha256 |
+| 0A | ERROR | code, message, transferId tùy chọn |
 
-```powershell
-.\build.ps1 compile test package
-# Terminal 1: server cho LAN
-.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -UdpPort 49001
-# Terminal 2: tìm các server trên các card mạng đang hoạt động
-.\run-discovery.ps1
+Sai offset trả OFFSET_MISMATCH; hash sai trả HASH_MISMATCH; file không có trả NOT_FOUND; quá tải trả SERVER_BUSY nếu gửi được response tương quan. Chi tiết validation/error codes tại [đặc tả giao thức](docs/protocol.md). Không mở cổng TCP này bằng HTTP/browser.
+
+## UDP Discovery protocol
+
+Mặc định UDP 49001, TCP 49000. Request ASCII `LANFS_DISCOVER/1 <nonce>`; response `LANFS_HERE/1 <nonce> <tcpPort>`. Nonce là 32 hex chữ thường, tối đa 128 byte/gói. Client kiểm tra version/nonce/port, lấy IP từ nguồn packet và loại trùng endpoint. Timeout 800 ms/lần, tối đa ba lần. Broadcast theo interface; không bảo đảm qua router hoặc Wi-Fi guest isolation. Discovery không tự kết nối, kể cả chỉ có một kết quả.
+
+## Connect / LIST_FILES sequence
+
+```mermaid
+sequenceDiagram
+  actor U as Người dùng
+  participant UI as Swing UI
+  participant C as TCP Client
+  participant S as TCP Server / Dispatcher
+  participant F as FileCatalog
+  U->>UI: IP + TCP port, Connect
+  UI->>C: Worker connect()
+  C->>S: TCP connect
+  C->>S: LIST_FILES(requestId)
+  S->>F: listFiles() + validate completed
+  F-->>S: FileInfo[]
+  S-->>C: FILE_LIST(same requestId)
+  C-->>UI: Render bảng trên EDT
 ```
 
-Kết quả liệt kê `số thứ tự | IP | TCP port`; mặc định **chỉ tìm kiếm**, không tự kết nối server đầu tiên. Chọn IP/port trong kết quả rồi kết nối bằng `run-client.ps1` hoặc `run-swing.ps1`. Có thể yêu cầu CLI discovery kết nối TCP và LIST_FILES tới một lựa chọn tường minh:
+## Upload sequence
 
-```powershell
-.\run-discovery.ps1 -ConnectIndex 1
+```mermaid
+sequenceDiagram
+  participant C as UploadService / TCP Client
+  participant S as Server Transfer Service
+  participant D as Storage / Catalog
+  C->>C: SHA-256 nguồn
+  C->>S: UPLOAD_INIT(name,size,sha256)
+  S->>D: Tạo part + snapshot, cấp UUID
+  S-->>C: TRANSFER_READY(nextOffset=0)
+  loop Từng chunk, stop-and-wait
+    C->>S: FILE_CHUNK(transferId,offset,data)
+    S->>D: Ghi bytes + checkpoint
+    S-->>C: PROGRESS_ACK(nextOffset)
+  end
+  S->>D: Verify size/hash, publish, register catalog
+  S-->>C: TRANSFER_COMPLETE
 ```
 
-Để kiểm tra trên cùng máy, dùng truy vấn UDP unicast localhost:
+## Download sequence
 
-```powershell
-# Terminal 1
-.\run-server.ps1 -BindAddress 127.0.0.1 -Port 49000 -UdpPort 49001
-# Terminal 2
-.\run-discovery.ps1 -TargetHost 127.0.0.1 -UdpPort 49001 -ConnectIndex 1
+```mermaid
+sequenceDiagram
+  participant C as DownloadService / TCP Client
+  participant S as Server Transfer Service
+  participant D as File Storage
+  C->>S: DOWNLOAD_INIT(fileId)
+  S->>D: Kiểm tra completed source
+  S-->>C: TRANSFER_READY(metadata,nextOffset=0)
+  C->>C: Tạo part + checkpoint
+  C->>S: PROGRESS_ACK(0)
+  loop Từng chunk, stop-and-wait
+    S->>C: FILE_CHUNK(offset,data)
+    C->>C: Ghi part + checkpoint
+    C->>S: PROGRESS_ACK(nextOffset)
+  end
+  C->>C: Verify SHA-256, publish không ghi đè
+  C->>S: TRANSFER_COMPLETE
 ```
 
-Mỗi lần thử mặc định 800 ms, tối đa 3 lần, khoảng 2,4 giây chờ mạng. Client dùng broadcast của từng network interface và lấy IP từ nguồn packet. Nếu không tìm thấy server, kết nối IP/port trực tiếp vẫn hoạt động. Dùng `-DisableDiscovery` trên run-server.ps1 nếu chỉ muốn TCP; UDP bind lỗi cũng không làm dừng TCP.
+## Resume sequence
 
-Trên LAN tin cậy dùng profile Private, nếu firewall chặn UDP thì mở PowerShell bằng Administrator trên máy server và thêm rule (không cần tắt firewall):
-
-```powershell
-New-NetFirewallRule -DisplayName 'LAN File Sharing UDP Discovery 49001' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 49001 -Profile Private -RemoteAddress LocalSubnet
+```mermaid
+sequenceDiagram
+  participant C as Client Transfer Service
+  participant S as Server Transfer Service
+  C--xS: Socket bị ngắt
+  Note over C,S: Giữ part/checkpoint; chờ lease cũ được thu hồi
+  C->>S: TCP reconnect
+  C->>S: RESUME_QUERY(id,direction,fileId,size,sha256)
+  S->>S: Kiểm tra metadata, TTL, ownership, nguồn/prefix
+  S-->>C: TRANSFER_READY
+  alt Upload
+    Note over C,S: Server trả offset đã nhận hợp lệ
+    C->>S: FILE_CHUNK từ nextOffset
+    S-->>C: PROGRESS_ACK
+  else Download
+    C->>C: Kiểm tra checkpoint/part local
+    C->>S: PROGRESS_ACK(offset local)
+    S->>C: FILE_CHUNK từ offset bên nhận
+    C-->>S: PROGRESS_ACK
+  end
+  Note over C,S: Đủ byte → verify hash → publish → COMPLETE theo chiều truyền
 ```
 
-Quy tắc TCP 49000 trong hướng dẫn LAN bên dưới vẫn cần cho truyền file. Broadcast không được bảo đảm đi qua router hoặc Wi-Fi guest/client isolation. Swing đã có **Discover**, danh sách chọn server và **Cancel search**; nhập IP/port thủ công vẫn hoạt động. Chi tiết API, lifecycle và kiểm thử: [docs/phase7.md](docs/phase7.md).
+Resume giữ ID, không tạo file mới/replay toàn bộ. Session hết hạn sau 24 giờ từ hoạt động cuối, chỉ tồn tại trong cùng tiến trình server. Không restart server giữa disconnect/reconnect. ACK là offset đã ghi mức ứng dụng, không cam kết fsync chống mất điện.
 
-## Định dạng source code
-
-Java dùng 4 dấu cách để thụt lề, giới hạn dòng mục tiêu 120 ký tự và tách khối lệnh rõ ràng. Maven XML dùng 2 dấu cách. Quy tắc nằm trong `.editorconfig` và `config/java-formatter.xml`.
-
-Khi mở root repository bằng VS Code với extension Java của Red Hat, cấu hình `.vscode/settings.json` chọn sẵn profile **LAN File Sharing**. Dùng **Shift+Alt+F** trên Windows để format file Java. Formatter là công cụ editor, không thêm dependency chạy ứng dụng.
-
-## Phase 6 — nhiều client và độ ổn định
-
-Server mặc định nhận tối đa 32 session TCP đồng thời, timeout 30 giây; có deadline cho frame/write và phản hồi SERVER_BUSY có requestId khi quá tải nếu còn gửi được response hợp lệ. Cấu hình khi chạy:
-
-```powershell
-.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -MaxConnections 32 -TimeoutMillis 30000
-```
-
-Đã chạy compile/test/package: **141 test PASS**. Có bằng chứng 4/8 upload đồng thời, 4 upload + 4 download, cô lập client lỗi, resume song song và shutdown giữ partial. Xem [báo cáo Phase 6: threading, khóa, test và giới hạn](docs/phase6.md). Nhánh triển khai `feature/tv1-tcp-server`.
-
-## Hướng dẫn chạy trên localhost (Windows PowerShell)
-
-Ứng dụng chạy bằng **Java Swing**, không mở bằng trình duyệt. `localhost` là máy đang chạy ứng dụng; dùng địa chỉ **127.0.0.1**, cổng TCP **49000**. Không truy cập `http://localhost:49000` vì cổng này sử dụng giao thức TCP riêng, không phải HTTP.
-
-### 1. Vào thư mục dự án và kiểm tra Java/Maven
-
-```powershell
-Set-Location -LiteralPath 'D:\lập trình mạng\LAN_File_Sharing'
-java -version
-mvn -version
-```
-
-Cần JDK 21 trở lên và Maven 3.9 trở lên trong PATH. Máy hiện tại đã build thành công bằng JDK 23, compile theo Java 21. Nếu lưu repository ở nơi khác, thay đường dẫn trong lệnh Set-Location.
-
-### 2. Build trước khi chạy
-
-```powershell
-.\build.ps1 compile test package
-```
-
-Chờ thông báo **BUILD SUCCESS**. Lần đầu cần Internet để Maven tải dependency. Khi đã build bản mới nhất, có thể mở server/client ngay mà không cần build lại mỗi lần chạy.
-
-### 3. Terminal 1: chạy server localhost
-
-```powershell
-Set-Location -LiteralPath 'D:\lập trình mạng\LAN_File_Sharing'
-.\run-server.ps1 -BindAddress 127.0.0.1 -Port 49000
-```
-
-Giữ terminal này mở. Server sẵn sàng khi xuất hiện:
+## Cấu trúc repository
 
 ```text
-LAN File Sharing TCP listening on 127.0.0.1:49000
+README.md
+INSTRUCTION.md                 # nguyên bản giảng viên, không chỉnh sửa
+statics/results/               # CSV và bằng chứng thật
+source/
+  pom.xml                      # parent reactor, Java release 21
+  common/                      # framing, DTO, hash, UDP protocol
+  server/                      # network, transfer, storage, discovery
+  client/                      # network, transfer, ui, discovery
+  experiments/                 # POM + tài liệu; tools kiểm tra release
+docs/                          # báo cáo và đặc tả bổ trợ
+scripts/java-launch.ps1        # helper vận chuyển Unicode CLI args
+build.ps1
+run-server.ps1
+run-swing.ps1
+run-client.ps1                  # CLI LIST_FILES
+run-upload.ps1 / run-download.ps1 / run-discovery.ps1
+run-resume-demo.ps1 / run-resume-upload.ps1 / run-resume-download.ps1
 ```
 
-Server mặc định lưu dữ liệu tại `runtime/server`. Dừng bằng **Ctrl+C**. Nếu đang chạy server từ bản code cũ, dừng server cũ rồi chạy lại sau khi build.
+Toàn bộ Java source và công cụ Python đặt dưới source/. Các PS1 root là launcher/build tiện ích. Runtime/cache/target không nộp như source. [Module common](source/common/README.md), [server](source/server/README.md), [client](source/client/README.md), [experiments](source/experiments/README.md).
 
-### 4. Terminal 2: mở giao diện client
+## Môi trường và build trên máy mới
 
-Mở một cửa sổ PowerShell mới, không chạy lệnh này trong terminal đang giữ server:
+1. Clone repository nhóm bằng URL thật do nhóm cung cấp, vào thư mục chứa README này. Không dùng URL starter để clone ứng dụng đã hoàn thiện.
+2. Cài JDK **21** (khuyến nghị) hoặc mới hơn, Maven **3.9+**, đặt JAVA_HOME/PATH. Kiểm tra cả hai lệnh cùng dùng JDK mong muốn:
+   ```powershell
+   java -version
+   mvn -version
+   ```
+3. Từ root:
+   ```powershell
+   .\build.ps1 clean package
+   ```
+   Lần đầu cần Internet cho Maven Central. Script dùng cache tương đối `.m2/repository` trong dự án; không chứa đường dẫn máy phát triển. Chờ BUILD SUCCESS.
+4. Nếu PowerShell chặn script, cho phép **chỉ phiên hiện tại** theo quy định máy:
+   ```powershell
+   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+   ```
+
+Build Maven trực tiếp: `mvn -f source/pom.xml clean package`. Lệnh này dùng cache Maven mặc định; để dùng các launcher PS1 đi kèm, build bằng build.ps1 để runtime Jackson jars có trong cache dự án. JAR hiện tại là thin JAR, **không chạy bằng java -jar**; launcher ghép classpath đủ common/Jackson. Không cần exec-maven-plugin để chạy.
+
+Trong môi trường kiểm chứng này Clean Plugin chưa có trong cache và tải mạng bị chặn; lệnh clean trên máy mới **chưa được xác minh**. Khi cache đã đủ, dùng `.\build.ps1 -Offline package` để không tải mạng; `-SkipTests` chỉ dùng khi đã có kết quả test cho cùng source. Build từ source không có target được kiểm tra riêng trong báo cáo. Chưa có JDK 21 runtime cài tại máy này: kiểm tra bytecode Java 21 không thay thế chạy trực tiếp trên JDK 21.
+
+## Chạy server và Swing client
+
+Mở hai terminal tại root; cần build trước.
 
 ```powershell
-Set-Location -LiteralPath 'D:\lập trình mạng\LAN_File_Sharing'
-.\run-swing.ps1 -ServerHost 127.0.0.1 -Port 49000
+# Terminal 1
+.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -UdpPort 49001 -StorageDirectory runtime/server
+# Terminal 2: cùng máy
+.\run-swing.ps1 -ServerHost 127.0.0.1 -Port 49000 -UdpPort 49001
 ```
 
-Lệnh mở cửa sổ **LAN File Sharing**. Trên giao diện:
+Server in TCP listening và UDP discovery listening (nếu bind được). GUI có tab Server files, Transfers, Activity log. Dùng Ctrl+C để dừng server; đóng GUI theo nút cửa sổ. Không dừng mọi java.exe vì có thể ảnh hưởng ứng dụng khác. Server launcher đã kiểm chứng qua process thật; MainFrame/luồng GUI đã qua DesktopSmokeTest. Lượt kiểm tra riêng run-swing.ps1 khởi động đúng JVM nhưng không xác nhận được external window title/đóng bình thường trong môi trường quản lý này, nên cần chạy thử trực tiếp trên desktop trước release; xem receipt trong báo cáo.
 
-1. Kiểm tra **Server IP = 127.0.0.1**, **TCP port = 49000**.
-2. Bấm **Connect**. Khi kết nối thành công, danh sách file tự tải; server mới chưa có file sẽ hiện **No files**.
-3. Bấm **Upload file**, chọn một file trên máy. Chờ **Completed / SHA-256 verified**; file sẽ xuất hiện trên bảng.
-4. Chọn một hàng trên bảng rồi bấm **Download selected**, chọn nơi lưu và tên file mới. Ứng dụng không ghi đè file đích đã tồn tại.
-5. Bấm **Refresh** để tải lại danh sách; bấm **Disconnect** để ngắt kết nối.
+### Cấu hình
 
-Trong workspace hiện có hai file demo để chọn Upload: `runtime/demo/sample-1MiB.bin` và `runtime/demo/sample-100MiB.bin`. Đây là file local bị Git ignore, không có sẵn khi clone repository sang máy khác; có thể chọn file bất kỳ của mình.
+| Thành phần | Tùy chọn / mặc định |
+|---|---|
+| Server bind | -BindAddress 0.0.0.0; loopback riêng dùng 127.0.0.1 |
+| TCP | -Port 49000 ở cả server/client |
+| UDP | -UdpPort 49001 ở server/GUI/discovery |
+| Storage | -StorageDirectory runtime/server, phải ngoài source/ |
+| Giới hạn server | -MaxConnections 32, -TimeoutMillis 30000, -MaxFileBytes 1073741824 |
+| UDP tùy chọn | -DisableDiscovery; UDP bind lỗi không làm ngừng TCP |
+| Client checkpoint | -CheckpointDirectory runtime/client trên GUI/upload/resume |
+| Địa chỉ server | -ServerHost hoặc nhập trong GUI; máy B dùng IPv4 máy A |
 
-Để thử Resume: upload/download file đủ lớn → bấm **Disconnect** khi đang truyền → chờ **Interrupted** → bấm **Connect** lại cùng server → chọn hàng Interrupted trong bảng Transfers → bấm **Resume selected**. Giữ server chạy liên tục; không restart server giữa hai lần kết nối. Lịch sử Resume của UI hiện giữ trong cùng lần mở cửa sổ.
+Log server ra stdout/stderr; GUI có Activity log. Khi thu log tự động phải gom stdout/stderr ở cấp process hoặc cẩn thận NativeCommandError của Windows PowerShell khi redirect Java logger. File part/snapshot ở runtime storage hoặc cạnh destination download; không đặt dữ liệu runtime trong source hay commit vào Git.
 
-### 5. Kiểm tra localhost bằng CLI nếu cần
+### Các thao tác
 
-Khi server ở Terminal 1 vẫn chạy, có thể kiểm tra LIST_FILES từ terminal khác:
+1. **Discover**: chọn UDP port, Discover, chọn endpoint rõ ràng; hoặc nhập Server IP/TCP port.
+2. **Connect**: GUI kết nối và tải danh sách; **Refresh** để LIST_FILES lại.
+3. **Upload file**: chọn regular file đọc được; chờ Completed sau verify server.
+4. **Download selected**: chọn hàng, chọn đường dẫn mới có parent tồn tại; không ghi đè.
+5. **Verify**: Completed chỉ sau kiểm tra SHA-256. Kiểm tra độc lập:
+   ```powershell
+   Get-FileHash .\runtime\input.bin, .\runtime\received.bin -Algorithm SHA256
+   ```
+6. **Resume**: truyền file lớn → Disconnect → đợi Interrupted → Connect cùng endpoint → chọn hàng Interrupted trong Transfers → Resume selected. Giữ GUI và server đang mở.
+7. **Nhiều client**: mở 4/8 terminal chạy run-swing.ps1; mỗi cửa sổ một connection. Server quá tải có thể trả SERVER_BUSY; không hứa băng thông tăng tuyến tính.
 
+CLI hỗ trợ demo:
 ```powershell
 .\run-client.ps1 -ServerHost 127.0.0.1 -Port 49000
+.\run-discovery.ps1 -TargetHost 127.0.0.1 -UdpPort 49001 -ConnectIndex 1
+.\run-upload.ps1 -LocalFile README.md -ServerHost 127.0.0.1 -Port 49000
+# Thay UUID bằng fileId thật từ kết quả upload/LIST_FILES:
+.\run-download.ps1 -FileId '<UUID-thật>' -Destination runtime/received.md -ServerHost 127.0.0.1 -Port 49000
 ```
 
-Kết quả `FILE_LIST ... count=...` xác nhận client đã trao đổi request/response với server. Lệnh này chỉ xem danh sách; để upload/download bằng giao diện hãy dùng `run-swing.ps1`.
+## Demo hai máy LAN và Windows Firewall
 
-### Lỗi thường gặp khi chạy
-
-| Hiện tượng | Cách xử lý |
-| --- | --- |
-| Cannot connect / Connection refused | Chạy server trước; kiểm tra cả hai bên dùng 127.0.0.1 và cùng port 49000. |
-| Address already in use | Có server khác đang dùng cổng; dừng server cũ hoặc đổi cả server và client sang cùng cổng mới, ví dụ 49010. |
-| Missing JAR / Run package first | Chạy lại `.\build.ps1 compile test package` và chờ BUILD SUCCESS. |
-| Không tìm thấy java hoặc mvn | Kiểm tra JDK/Maven và PATH bằng `java -version`, `mvn -version`. |
-| PowerShell chặn chạy script | Với script trong repository tin cậy, có thể chạy riêng bằng `powershell -NoProfile -ExecutionPolicy Bypass -File .\run-swing.ps1 -ServerHost 127.0.0.1 -Port 49000`; không cần đổi execution policy toàn máy. |
-| Không thấy file trên bảng | Server mới có thể rỗng; upload qua UI rồi Refresh. File chưa hoàn tất không được công bố. |
-
-Để chạy giữa hai máy LAN, dùng server `.\run-server.ps1` (mặc định bind `0.0.0.0`), nhập **IP LAN thực của máy server** trên client và cho phép cổng TCP qua firewall. `127.0.0.1` chỉ dùng khi server và client cùng máy. UDP Discovery đã có qua `run-discovery.ps1`; Swing cũng có nút Discover; có thể nhập IP/port thủ công bất cứ khi nào không tìm kiếm hoặc truyền file.
-
-## Kết nối nhiều máy trong mạng LAN
-
-Mô hình: **máy A chạy Server**, các máy B/C chạy **Swing Client**. Client upload file lên máy A; các client khác Refresh rồi download file đó từ máy A. Không cần chạy server trên từng máy client.
-
-### Máy A — chạy server
-
-1. Cho các máy vào cùng mạng LAN có thể liên lạc với nhau: cùng Wi-Fi hoặc mạng dây qua router/switch. Tránh Wi-Fi khách có chế độ chặn các thiết bị truy cập nhau.
-2. Build và chạy server nghe trên các card mạng:
-
+Máy A chạy server bind 0.0.0.0; lấy IPv4 adapter LAN thực bằng ipconfig. Máy B chạy:
 ```powershell
-Set-Location -LiteralPath 'D:\lập trình mạng\LAN_File_Sharing'
-.\build.ps1 compile test package
-.\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000
+.\run-swing.ps1 -ServerHost 192.168.1.20 -Port 49000 -UdpPort 49001
+Test-NetConnection 192.168.1.20 -Port 49000
 ```
+192.168.1.20 chỉ là ví dụ, thay bằng IP thật. Cả hai dùng cùng revision, cùng mạng tin cậy; không nhập 127.0.0.1 trên B để truy cập A.
 
-Không bind `127.0.0.1` khi muốn máy khác truy cập: địa chỉ đó chỉ nhận kết nối trên chính máy A. `0.0.0.0` dùng để server lắng nghe; không nhập địa chỉ này vào client.
-
-3. Mở PowerShell khác trên máy A và tìm địa chỉ IP:
-
+Nếu Windows Firewall chặn, quản trị viên máy A thêm rule giới hạn Private/LocalSubnet:
 ```powershell
-ipconfig
+New-NetFirewallRule -DisplayName 'LANFS demo TCP' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 49000 -Profile Private -RemoteAddress LocalSubnet
+New-NetFirewallRule -DisplayName 'LANFS demo UDP' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 49001 -Profile Private -RemoteAddress LocalSubnet
 ```
+Không tắt toàn bộ firewall. Đổi port thì đổi rule; chỉ gỡ các rule này khi không dùng nữa bằng Remove-NetFirewallRule -DisplayName tương ứng. Nếu broadcast bị chặn, nhập IP thủ công hoặc thử UDP unicast. LAN hai máy/firewall commands là **quy trình chưa thực thi ở môi trường này**, không phải kết quả PASS.
 
-Lấy **IPv4 Address** của card Wi-Fi/Ethernet đang kết nối LAN, ví dụ **192.168.1.10**. Không lấy địa chỉ của VPN, card ảo hoặc `127.0.0.1`. Thay IP ví dụ trong các lệnh bên dưới bằng IP thực của máy A.
+### Kịch bản demo và expected result
 
-4. Nếu Windows Firewall chặn kết nối, mở **PowerShell bằng Run as Administrator trên máy A**. Với mạng LAN tin cậy đang dùng profile **Private**, thêm rule:
+| Bước | Thao tác | Expected result |
+|---|---|---|
+| 1 | Build, start server storage riêng | BUILD SUCCESS, listening đúng port, không lỗi bind |
+| 2 | Start Swing client | Cửa sổ mở, thao tác không treo EDT |
+| 3 | Discover UDP, chọn server | Hiện IP/TCP port; chưa tự connect |
+| 4 | Connect | Connected, LIST_FILES tải được |
+| 5 | Refresh | Chỉ thấy completed files |
+| 6 | Upload file binary | Progress cập nhật, Completed sau verify; có UUID |
+| 7 | Verify SHA nguồn và completed của server | Hai hash bằng nhau |
+| 8 | Download vào tên mới | Completed, không ghi đè file cũ |
+| 9 | Get-FileHash nguồn và bản nhận | SHA-256 bằng nhau |
+| 10 | Upload/download file 100 MiB, bấm Disconnect giữa chừng | Interrupted, giữ transferId/offset/checkpoint |
+| 11 | Connect lại cùng server | TCP hoạt động, không restart server |
+| 12 | Resume selected | Tiếp tục offset hợp lệ, Completed, hash đúng |
+| 13 | Mở nhiều client, cắt riêng một client | Các client còn lại tiếp tục, server còn LIST_FILES được |
+| 14 | Activity log/server log, CSV thực | Có request/transfer/offset/trạng thái; phân biệt số liệu localhost/partial |
 
-```powershell
-Get-NetConnectionProfile
-New-NetFirewallRule -DisplayName 'LAN File Sharing TCP 49000' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 49000 -Profile Private -RemoteAddress LocalSubnet
-```
+Muốn demo cắt socket hai chiều tự động: `./run-resume-demo.ps1 -LocalFile runtime/input.bin -Destination runtime/resumed.bin -ServerHost 127.0.0.1 -Port 49000`; nguồn ít nhất 1 MiB, nên dùng 100 MiB; destination chưa tồn tại. Demo này dùng socket thật, không restart server. Bước benchmark chỉ xem dữ liệu cũ hiện có, **chưa có source benchmark để chạy lại**.
 
-Rule này chỉ cho subnet LAN truy cập cổng 49000 trên profile Private; không cần tắt firewall. Nếu đang dùng profile Public, rule Private sẽ không áp dụng: trên mạng tin cậy của mình, kiểm tra/cấu hình Network profile trong Windows Settings; với mạng trường/cơ quan hãy theo cấu hình của quản trị viên. Không cần port forwarding trên router để dùng nội bộ LAN.
+Ảnh thực từ DesktopSmokeTest localhost: [cửa sổ upload/download completed](statics/screenshots/phase10-desktop-localhost.png). Ảnh được test render từ cửa sổ Swing thật sau kiểm tra hash; không phải bằng chứng LAN. Chụp thêm ảnh hai máy khi chạy demo LAN.
 
-### Máy B/C — chạy client
+## Test cases và kết quả thực nghiệm
 
-Mỗi máy cần có source/build ứng dụng và Java phù hợp. Nếu clone repository chưa có JAR, cài JDK 21+ và Maven 3.9+, vào thư mục repository của máy đó rồi build một lần:
+Chạy `./build.ps1 test` hoặc `./build.ps1 package` (package đã bao gồm test). Test thật bao phủ framing, TCP connect/refused/timeout, LIST_FILES, binary upload/download, hash mismatch, resume, offset sai, 1/4/8 client, overload, UDP discovery/failure và Swing controller/EDT. DesktopSmokeTest mở GUI thật khi có display; nếu headless sẽ skip và phải ghi BLOCKED.
 
-```powershell
-.\build.ps1 compile test package
-```
+Kết quả bản cuối: [JUnit CSV](statics/results/phase10-junit.csv), [bằng chứng build/run](statics/results/phase10-validation.json), [review/checklist](docs/release-review.md). Không dùng số test ở báo cáo phase cũ để đại diện bản cuối.
 
-Sau đó kiểm tra máy client truy cập được TCP server:
+Các CSV phase09 còn ở statics/results là **179 mẫu / 43 batch localhost**, 179 mẫu success/hash=true; lượt đo bị ngắt trước đủ 234 mẫu/54 batch dự kiến. Không có download 100 MiB trong dữ liệu này; upload 100 MiB với 8 client chỉ có một batch. Median throughput từng client ở upload 100 MiB: 1 client **9,806 MiB/s** (3 mẫu), 4 client **4,761 MiB/s** (12 mẫu), 8 client **3,404 MiB/s** (8 mẫu cùng một batch). Đây là dữ liệu lịch sử, không phải phép đo LAN hoặc benchmark tái lập từ source checkout hiện tại. Không cộng throughput batch vào throughput từng client và không suy luận nhanh/chậm từ một batch.
 
-```powershell
-Test-NetConnection -ComputerName 192.168.1.10 -Port 49000
-```
+## Hạn chế và hướng phát triển
 
-Chỉ khi **TcpTestSucceeded : True**, mở Swing:
+- Chưa có TLS/login/quota: chỉ dùng mạng nội bộ tin cậy.
+- Resume không qua server restart; UI history không bền vững sau đóng GUI; checkpoint upload cũ chưa tự dọn.
+- LIST_FILES tính lại hash, không pagination; catalog lớn có thể chậm/quá JSON 64 KiB.
+- Stop-and-wait ACK và disk/checkpoint/hash có chi phí; chưa tối ưu pipeline/throughput.
+- Download publish cần hard link; chưa xác minh mọi filesystem; không bảo đảm chống mất điện.
+- Chưa kiểm tra LAN thật, JDK 21 runtime, tải dependency trên máy hoàn toàn mới và soak nhiều giờ.
+- Source benchmark còn thiếu; cần hoàn thiện trước khi tuyên bố đầy đủ thực nghiệm.
+- HTTP browser download là hướng phát triển tùy chọn, chưa có server HTTP trong code.
 
-```powershell
-.\run-swing.ps1 -ServerHost 192.168.1.10 -Port 49000
-```
+Ưu tiên tiếp theo: hoàn thiện benchmark tái lập, kiểm thử hai máy/JDK 21, metadata cleanup client, pagination; sau đó mới xét TLS/xác thực và tối ưu throughput.
 
-Trong giao diện, kiểm tra Server IP là IP máy A, port 49000 rồi bấm **Connect**. Không nhập `127.0.0.1` ở máy B/C: đó là chính máy client, không phải máy A.
+## Tài liệu tham khảo và quy định nộp
 
-### Chia sẻ file giữa B và C
+- [Starter chính thức của giảng viên](https://github.com/hungdn1701/jnp-project-starter); [INSTRUCTION.md nguyên bản](INSTRUCTION.md), lấy từ nhánh main, không chỉnh nội dung.
+- [Java 21 API](https://docs.oracle.com/en/java/javase/21/docs/api/), [Swing concurrency](https://docs.oracle.com/javase/tutorial/uiswing/concurrency/).
+- [Maven lifecycle](https://maven.apache.org/guides/introduction/introduction-to-the-lifecycle.html), [JUnit 5](https://docs.junit.org/5.12.1/user-guide/), [Jackson Databind](https://github.com/FasterXML/jackson-databind).
+- [Đặc tả local](docs/protocol.md) và [review release](docs/release-review.md); báo cáo phase1–8 là lịch sử, có giới hạn cũ không còn áp dụng cho bản hiện tại.
 
-1. Máy B Connect → **Upload file** → chọn nguồn trên máy B → chờ **Completed / SHA-256 verified**.
-2. Máy C Connect tới cùng IP/port → **Refresh** → chọn file vừa upload → **Download selected** → chọn đường dẫn đích trên máy C → chờ Completed.
-3. File hoàn tất lưu ở `runtime/server` trên máy A theo fileId; không cần chia sẻ folder Windows hoặc đưa đường dẫn storage cho client. Client chỉ thấy metadata và file completed.
-4. Nếu mất kết nối giữa chừng, giữ server trên A chạy, client Connect lại cùng IP/port rồi chọn transfer Interrupted và **Resume selected** trong cùng cửa sổ client.
-
-Server hỗ trợ nhiều máy client đồng thời; mỗi cửa sổ client hiện chạy một transfer tại một thời điểm. Internet chỉ cần cho lần build đầu tải dependency nếu chưa cache, không cần Internet để truyền file trong LAN.
-
-Nếu `TcpTestSucceeded` là False: kiểm tra server còn chạy, bind `0.0.0.0`, đúng IPv4/port, firewall trên máy A, VPN và chế độ client/AP isolation của Wi-Fi. IP máy A có thể thay đổi sau khi đổi mạng hoặc router cấp DHCP lại; chạy `ipconfig` để kiểm tra. Khi đổi cổng server, phải đổi cả client và rule firewall tương ứng. Có thể tìm IP/port bằng `run-discovery.ps1`; nếu không thấy server, nhập IP thủ công vẫn hoạt động.
-
-## Chạy giao diện desktop Swing — Phase 8
-
-```powershell
-.\build.ps1 compile test package
-# Terminal 1
-.\run-server.ps1
-# Terminal 2
-.\run-swing.ps1
-```
-
-Nhập IP/port rồi Connect; chọn Upload file hoặc chọn hàng trên bảng để Download. Khi transfer Interrupted, Connect lại cùng server, chọn hàng trong Transfers và bấm Resume. Giao diện hiển thị progress/speed, verify SHA-256, trạng thái và log; một transfer chạy tại một thời điểm. Không ghi đè file đích có sẵn.
-
-Đã có test cửa sổ thật với file chooser/upload/download 1 MiB và test controller qua socket thật với file 100 MiB, ngắt/resume hai chiều. Swing đã tích hợp UDP Discover và giữ fallback IP/port thủ công. Xem [kiến trúc, kết quả test và checklist báo cáo Phase 8](docs/phase8.md). Phần UI thuộc TV4 và được hoàn thiện trên `feature/tv4-ui-discovery`.
-
-## Phase 5: Resume upload/download
-
-Đã hỗ trợ reconnect và resume TCP v1 hai chiều, giữ transferId/fileId, xác minh offset và SHA-256; session server giữ 24 giờ trong cùng tiến trình. Nhánh triển khai: `feature/tv2-upload-server` (TV2 phụ trách hash/session/resume, phối hợp API client TV3).
-
-```powershell
-.\build.ps1 compile test package
-# Terminal 1
-.\run-server.ps1
-# Terminal 2: dùng file >= 1 MiB và đích chưa tồn tại
-New-Item -ItemType Directory -Force runtime/downloads | Out-Null
-.\run-resume-demo.ps1 -LocalFile 'D:\data\sample.bin' -Destination runtime/downloads/resumed.bin
-```
-
-Demo tự ngắt socket ở khoảng 30% upload/40% download rồi tiếp tục phần thiếu. CLI riêng: `run-resume-upload.ps1 -TransferId <uuid>` và `run-resume-download.ps1 -TransferId <uuid> -CheckpointFile <path>` cho phiên đang gián đoạn. Không khôi phục session sau server restart; không resume transfer đã completed. Giữ chính sách không ghi đè file đích.
-
-Đã chạy compile/test/package: **118 test PASS**. Smoke file 100 MiB với heap 32 MiB mỗi tiến trình thành công, upload 30 + 70 MiB và download 40 + 60 MiB, bytes/hash khớp. Xem [báo cáo Phase 5](docs/phase5.md) để biết API, state machine, metadata, số đo, giới hạn và cách chạy CLI.
-
-Project bài tập lớn môn Lập trình mạng. Yêu cầu và phân công lấy từ `../De_tai_Chia_se_file_LAN_Java_Swing.docx`.
-
-## Phạm vi
-
-Server TCP lưu file tập trung; client Java Swing xem danh sách, upload, download. UDP discovery hỗ trợ tìm server; nhập IP trực tiếp luôn khả dụng. File truyền theo khối, có SHA-256, ACK offset và resume khi mất kết nối. HTTP GET danh sách/download là phần mở rộng sau khi lõi ổn định.
-
-## Cấu trúc
-
-| Đường dẫn | Phụ trách | Nội dung |
-| --- | --- | --- |
-| `source/common` | TV1, phối hợp TV2/TV3 | Frame codec, message, lỗi, hợp đồng giao thức |
-| `source/server/network` | TV1 | TCP accept loop, phiên và dispatcher |
-| `source/server/transfer`, `storage` | TV2 | Truyền file, catalog, metadata, `.part`, hash/resume |
-| `source/client/network`, `transfer` | TV3 | TCP client, tiến độ, reconnect |
-| `source/client/ui` | TV4 | Java Swing desktop, tích hợp discovery và service |
-| `source/server/discovery`, `http`; `source/client/discovery`; `source/experiments` | TV4 | UDP, HTTP GET, đo tải/CSV |
-| `statics` | Cả nhóm | Sơ đồ, ảnh demo, kết quả thực nghiệm |
-
-Mỗi module có `pom.xml`, `src/main/java`, `src/test/java`. File chạy thực tế nằm trong thư mục runtime cấu hình được, không lưu trong source.
-
-## Build
-
-Yêu cầu JDK 21+ và Maven 3.9+. Từ thư mục project, trong PowerShell chạy `./build.ps1 validate`, `./build.ps1 test` hoặc `./build.ps1 package`. Script đặt Maven repository tại `.m2/repository` trong project; thư mục này đã được bỏ qua bởi Git. Có thể chạy trực tiếp từ `source/` bằng `mvn "-Dmaven.repo.local=../.m2/repository" validate`. Đã có LIST_FILES, upload/download và resume TCP; Swing desktop đã có (xem Phase 8).
-
-Lần chạy `test/package` đầu tiên cần truy cập Maven Central để tải plugin và thư viện. Nếu mạng hiện tại chặn Maven Central, chạy trên máy có Internet hoặc cấu hình mirror Maven được phép sử dụng; sau khi cache đủ dependency có thể build offline.
-
-## Việc cần chốt trước khi code
-
-Xem [giao thức v1](docs/protocol.md) và [review đề tài](docs/review.md). Mã type, framing, ACK/resume, tên trùng và giới hạn mặc định đã được chốt trong giao thức. Khi cần đổi hợp đồng, cập nhật tài liệu và `common` cùng một pull request.
-
-## Tiến độ
-
-1. Tuần 1: chốt giao thức, codec và TCP skeleton.
-2. Tuần 2: list/upload/download cơ bản và Swing kết nối.
-3. Tuần 3: nhiều client, SHA-256, tiến độ, log và lỗi.
-4. Tuần 4: ACK, reconnect, resume.
-5. Tuần 5: discovery, giao diện hoàn chỉnh, HTTP nếu còn thời gian; đo tải.
-6. Tuần 6: kiểm thử LAN, tài liệu và demo.
-
-## Nghiệm thu dự kiến
-
-File 1/10/100 MB; 1/4/8 client; hash khớp; ngắt rồi resume; IP sai, timeout, file không tồn tại, frame lỗi; Swing không treo. Ghi số đo thực tế trong `statics/results/`.
-
-## Chạy TCP server (TV1)
-
-```powershell
-.\build.ps1 package
-.\run-server.ps1
-# Hoặc chỉ lắng nghe trên máy local:
-.\run-server.ps1 -Port 49000 -BindAddress 127.0.0.1
-```
-
-Dừng bằng Ctrl+C. Server đọc catalog thực tế từ thư mục runtime; chỉ trả danh sách rỗng khi chưa có file hợp lệ. Hiện hỗ trợ upload và download TCP; resume hai chiều đã triển khai (xem Phase 5). Test `TcpServerTest` vẫn kiểm tra nền tảng TCP với catalog rỗng và nhiều kết nối.
-
-Hợp đồng triển khai cho TV2/TV3: [docs/tv1-api.md](docs/tv1-api.md).
-
-
-## Phase 1: TCP client kh?ng giao di?n
-
-Build to?n b? module: `./build.ps1 compile test package`.
-M? hai c?a s? PowerShell t?i th? m?c repository:
-
-```powershell
-# C?a s? 1; m?c ??nh bind 0.0.0.0:49000, d?ng b?ng Ctrl+C
-./run-server.ps1
-# C?a s? 2
-./run-client.ps1 -ServerHost 127.0.0.1 -Port 49000
-```
-
-Client in `FILE_LIST protocolVersion=1 requestId=<UUID> files=[]` r?i ng?t k?t n?i.
-C? th? ch?y client nhi?u l?n; server ti?p t?c ph?c v?. ?? th? LAN, d?ng IP LAN
-c?a m?y server trong `-ServerHost`, c?ng port v?i `run-server.ps1 -Port ...`.
-Phase 1 ch?a tri?n khai truy?n file, resume, UDP runtime ho?c Swing.
-Chi ti?t API, ki?m th? v? gi?i h?n: [b?o c?o Phase 1](docs/phase1.md).
-
-## Phase 2: Catalog và danh sách file thực tế (TV2)
-
-Server mặc định lưu tại `runtime/server`, gồm `completed/<UUID>`, `metadata/<UUID>.json` và `staging/`. Chỉ file có metadata hợp lệ, đúng size và SHA-256 mới được công bố. Catalog đọc lại được sau restart. File thiếu/sai hash, metadata hỏng, `.part`, `.tmp` và bytes chưa đăng ký không xuất hiện trong danh sách.
-
-```powershell
-./build.ps1 compile test package
-# Đăng ký file local trước khi chạy server; chưa có upload qua mạng
-./run-catalog.ps1 -LocalFile README.md -DisplayName README.md -StorageDirectory runtime/demo/storage
-# Terminal 1
-./run-server.ps1 -Port 49000 -StorageDirectory runtime/demo/storage
-# Terminal 2
-./run-client.ps1 -ServerHost 127.0.0.1 -Port 49000
-```
-
-CLI client hiển thị fileId, name, size và sha256. Hai lần đăng ký cùng tên tạo hai UUID khác nhau. StorageDirectory tương đối tính từ repository root khi dùng script; không đặt runtime trong `source/`. Công cụ đăng ký local chỉ dành cho quản trị, chạy khi server đã dừng.
-
-**Giới hạn v1:** FILE_LIST không có pagination. Nếu toàn bộ JSON vượt 65536 byte, server trả `ERROR SERVER_BUSY` với requestId gốc, không cắt JSON hoặc trả thiếu file. Listing tính lại SHA-256 nên có chi phí theo tổng dung lượng file; dữ liệu lớn có thể chạm timeout. Không sửa trực tiếp runtime trong lúc server đang chạy.
-
-Xem [thiết kế, API Phase 3/4 và kiểm thử Phase 2](docs/phase2.md).
-
-## Phase 3: Upload file qua TCP (TV2)
-
-Dừng server cũ bằng Ctrl+C trước khi build và chạy lại. Mở hai terminal tại repository root:
-
-```powershell
-./build.ps1 compile test package
-# Terminal 1
-./run-server.ps1 -Port 49000 -StorageDirectory runtime/server
-# Terminal 2
-./run-upload.ps1 -LocalFile README.md -ServerHost 127.0.0.1 -Port 49000
-./run-client.ps1 -ServerHost 127.0.0.1 -Port 49000
-```
-
-Lệnh upload truyền **nội dung file**, không chỉ metadata. Client hash source trước, gửi chunk binary tối đa 64 KiB và chờ ACK từng chunk; chỉ báo `UPLOAD_COMPLETE` sau khi server kiểm tra size/SHA-256 và đăng ký catalog. Không cần run-catalog.ps1 cho upload. Tên trùng được phép, phân biệt bằng UUID.
-
-Giới hạn mặc định 1 GiB ở mỗi bên, cấu hình bằng `-MaxFileBytes`. File rỗng và tên Unicode được hỗ trợ. Hash sai không công bố file; kết nối gián đoạn giữ `.part` và snapshot INTERRUPTED, nhưng **chưa có reconnect/resume**. Không sửa source trong lúc upload. Xem [luồng, state, API và bằng chứng Phase 3](docs/phase3.md).
-
-## Phase 4: Download file qua TCP (TV3)
-
-Dừng server cũ bằng Ctrl+C, build lại rồi chạy server như trên. Upload một file, lấy UUID từ `UPLOAD_COMPLETE` hoặc `run-client.ps1`, sau đó:
-
-```powershell
-New-Item -ItemType Directory -Force runtime/downloads | Out-Null
-# Thay <fileId> bằng UUID thực tế, destination là tên file local bạn chọn
-./run-download.ps1 -FileId '<fileId>' -Destination runtime/downloads/received.bin -ServerHost 127.0.0.1 -Port 49000
-```
-
-Client ghi `.part` và checkpoint, ACK từng chunk, kiểm tra size/SHA-256 rồi mới công bố destination và báo `DOWNLOAD_COMPLETE`. File rỗng/Unicode được hỗ trợ. **Không ghi đè:** destination phải chưa tồn tại, kể cả khi có tiến trình tạo nó giữa chừng. Parent phải tồn tại và ghi được; không dùng tên server để quyết định local path.
-
-Publish độc quyền yêu cầu filesystem hỗ trợ hard link (đã kiểm thử Windows NTFS); filesystem không hỗ trợ sẽ báo lỗi an toàn. EOF/timeout giữ partial INTERRUPTED, chưa tự resume. Xem [API, giới hạn và kiểm thử Phase 4](docs/phase4.md).
+Các thay đổi tài liệu, build và bằng chứng được chốt trên nhánh `chore/release-documentation` để merge cục bộ vào `main` theo yêu cầu. Push, tag hoặc tạo GitHub release cần yêu cầu riêng. Trước nộp: điền thành viên/MSSV/đóng góp thật, xác minh clean build và JDK 21/máy mới, chạy LAN nếu yêu cầu, khôi phục source benchmark và chụp ảnh thật. Chỉ công bố RELEASE READY sau khi các mục bắt buộc được kiểm chứng và không còn blocker.

@@ -1,0 +1,6 @@
+{
+  "command": "powershell -File run-swing.ps1 -CheckpointDirectory runtime/phase10-gui-launcher",
+  "displayVerified": false,
+  "closeRequested": true,
+  "cleanup": "Forced only verified GUI after close timeout"
+}
