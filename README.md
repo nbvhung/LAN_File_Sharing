@@ -1,5 +1,32 @@
 # LAN File Sharing — Chia sẻ file trong mạng LAN
 
+## Bàn giao nhanh cho thành viên — Windows, không Docker
+
+Ứng dụng chạy trực tiếp bằng **JDK 21 + Maven 3.9+ + PowerShell**. Không cần Docker, database hoặc Python để chạy server/Swing client; Python chỉ phục vụ các công cụ kiểm chứng bổ sung. Lần build đầu cần Internet để Maven tải thư viện.
+
+1. Clone nhánh `main` mới nhất của repository nhóm. Mở PowerShell tại thư mục chứa README này, kiểm tra:
+   ```powershell
+   java -version
+   mvn -version
+   .\build.ps1 package
+   ```
+   Đợi `BUILD SUCCESS`. Chạy bằng `build.ps1` để tạo đúng cache thư viện mà launcher sử dụng; lần đầu không dùng `-Offline` hoặc `-SkipTests`.
+2. Terminal thứ nhất, tại cùng thư mục:
+   ```powershell
+   .\run-server.ps1 -BindAddress 0.0.0.0 -Port 49000 -UdpPort 49001
+   ```
+3. Terminal thứ hai, tại cùng thư mục:
+   ```powershell
+   .\run-swing.ps1 -ServerHost 127.0.0.1 -Port 49000 -UdpPort 49001
+   ```
+4. Nếu client ở máy khác, thay `127.0.0.1` bằng IPv4 LAN thật của máy server. Trong GUI: Connect → Upload file → Refresh → Download selected vào tên mới. Nếu không kết nối được, xem phần Windows Firewall bên dưới.
+
+Nếu PowerShell chặn script, dùng `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` trong terminal hiện tại rồi chạy lại, theo quy định của máy. Nếu `java`/`mvn` không tìm thấy hoặc báo release 21 không được hỗ trợ, sửa PATH/JAVA_HOME và mở lại terminal; `mvn -version` phải báo JDK 21 trở lên.
+
+**Cách gửi repo nhẹ:** dùng Git clone/pull hoặc Download ZIP từ repository. Không nén nguyên thư mục đang làm việc trên máy phát triển: `.gitignore` không tự loại file khi nén bằng Explorer. Không cần gửi `.m2/`, `runtime/`, `target/`, log hay file đang truyền dở; mỗi máy tự build để tạo lại. Giữ source, POM, các launcher, `scripts/`, tài liệu, `INSTRUCTION.md` và bằng chứng nhỏ trong `statics/`.
+
+Phần core đã có bằng chứng test/build ở máy kiểm chứng; mỗi thành viên vẫn cần chạy các bước trên để xác nhận môi trường riêng. Source benchmark còn thiếu trong checkout hiện tại như ghi ở cuối README, không cần module đó để sử dụng server/Swing client.
+
 ## Giới thiệu và mục tiêu
 
 Ứng dụng Java Swing chia sẻ file giữa nhiều TCP client và một server trong mạng nội bộ. Mục tiêu môn Lập trình mạng: thiết kế framing trên TCP stream, truyền binary có kiểm tra SHA-256, tiếp tục truyền sau ngắt kết nối, xử lý nhiều client và tìm server bằng UDP.

@@ -19,6 +19,7 @@ replay_pid*
 *.hprof
 *.stackdump
 *.swp
+*.bak
 __pycache__/
 *.pyc
 *~
@@ -31,6 +32,10 @@ runtime/
 *.tmp
 # Keep only reviewed experiment and release evidence under version control.
 statics/results/*.csv
-!statics/results/phase09-*.csv
-!statics/results/phase10-*.csv
+!statics/results/phase09-benchmark-localhost.csv
+!statics/results/phase09-benchmark-localhost.csv.batches.csv
+!statics/results/phase09-benchmark-localhost.csv.resources.csv
+!statics/results/phase09-final-junit.csv
+!statics/results/phase09-final-stability-evidence.csv
+!statics/results/phase10-junit.csv
 !statics/results/.gitkeep
