@@ -1,10 +1,36 @@
+# IDE and operating-system temporary files; keep shared editor configuration.
 .idea/
+.vs/
+.vscode/*.log
+.DS_Store
+Thumbs.db
+Desktop.ini
+.classpath
+.project
+.settings/
+# Build artifacts and diagnostic dumps.
+target/
+*.class
+*.jar
+*.war
+*.zip
+hs_err_pid*
+replay_pid*
+*.hprof
+*.stackdump
+*.swp
+__pycache__/
+*.pyc
+*~
+# Local dependencies, runtime storage, partial transfers and logs.
 .m2/
 *.iml
-source/**/target/
 runtime/
 *.log
 *.part
 *.tmp
+# Keep only reviewed experiment and release evidence under version control.
 statics/results/*.csv
+!statics/results/phase09-*.csv
+!statics/results/phase10-*.csv
 !statics/results/.gitkeep

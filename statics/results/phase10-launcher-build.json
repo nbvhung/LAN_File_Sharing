@@ -1,0 +1,6 @@
+{
+  "command": "powershell -File build.ps1 -Offline -SkipTests package",
+  "exitCode": 0,
+  "tests": "separately executed in fresh checkout",
+  "log": "runtime/phase10-root-package.log"
+}

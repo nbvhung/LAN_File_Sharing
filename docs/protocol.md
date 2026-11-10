@@ -41,6 +41,6 @@ Mã lỗi: `BAD_REQUEST`, `UNSUPPORTED_VERSION`, `INVALID_FRAME`, `NOT_FOUND`, `
 
 UDP mặc định port `49001`, TCP `49000`, đều cấu hình được. Request ASCII `LANFS_DISCOVER/1 <nonce>`; response `LANFS_HERE/1 <nonce> <tcpPort>`. Nonce là 32 hex chữ thường; gói tối đa 128 byte. Client kiểm tra nonce/version, lấy IP từ địa chỉ nguồn gói. Timeout 800 ms, tối đa 3 lần thử. Luôn cho nhập IP/port thủ công.
 
-## HTTP tùy chọn
+## HTTP tùy chọn — chưa triển khai
 
-Chỉ GET `/files` trả JSON metadata, GET `/files/{fileId}` trả binary. Dùng catalog file hoàn tất; cổng riêng với TCP frame, không upload và không truy cập `.part`.
+Định hướng tương lai: GET `/files` trả JSON metadata, GET `/files/{fileId}` trả binary từ catalog completed, cổng riêng. Checkout hiện tại không có HTTP server hoặc endpoint này; không dùng trình duyệt để truy cập cổng TCP 49000.

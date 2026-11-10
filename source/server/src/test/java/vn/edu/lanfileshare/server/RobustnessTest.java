@@ -58,7 +58,15 @@ class RobustnessTest {
                         /* peer deadline closed socket */}
                 }, 0, 50, TimeUnit.MILLISECONDS);
                 try {
-                    assertEquals(-1, socket.getInputStream().read());
+                    long started = System.nanoTime();
+                    try {
+                        assertEquals(-1, socket.getInputStream().read());
+                    } catch (SocketException reset) {
+                        // Windows may reset a socket closed with unread inbound bytes.
+                        // A read timeout is not a SocketException and must still fail.
+                        assertFalse(socket.isClosed());
+                    }
+                    assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(2));
                 } finally {
                     drip.cancel(false);
                 }
