@@ -262,11 +262,11 @@ class ClientControllerIntegrationTest {
             view.clear();
             edt(() -> c.upload(source));
             TransferItem upload = view.await(s -> !s.busy() && s.state() == UiState.INTERRUPTED).transfers().getFirst();
-            assertEquals(3L * 1024 * 1024, upload.bytes());
-            assertTrue(upload.resumable());
+            assertEquals(3L * 1024 * 1024, upload.transferredBytes());
+            assertTrue(upload.canResume());
             assertTrue(running.transfers.sessions().awaitDetached(upload.transferId(), Duration.ofSeconds(5)));
             long sentBefore = client.metrics().sentDataBytes();
-            assertEquals(upload.bytes(), sentBefore);
+            assertEquals(upload.transferredBytes(), sentBefore);
             // Hold the real server lease on another socket. Exhausted SERVER_BUSY retries
             // must keep the old row resumable rather than discarding its checkpoint.
             connect(c, view, running.server.port());
@@ -287,7 +287,7 @@ class ClientControllerIntegrationTest {
                 edt(() -> c.resume(upload.rowId()));
                 UiSnapshot busyFailure = view.await(
                         s -> !s.busy() && s.state() == UiState.INTERRUPTED && s.message().startsWith("Resume failed"));
-                assertTrue(busyFailure.transfers().getFirst().resumable());
+                assertTrue(busyFailure.transfers().getFirst().canResume());
                 assertEquals(sentBefore, client.metrics().sentDataBytes());
             }
             assertTrue(running.transfers.sessions().awaitDetached(upload.transferId(), Duration.ofSeconds(5)));
@@ -304,9 +304,9 @@ class ClientControllerIntegrationTest {
             edt(() -> c.download(file, target));
             TransferItem download = view.await(s -> !s.busy() && s.state() == UiState.INTERRUPTED).transfers()
                     .getLast();
-            assertTrue(download.resumable());
+            assertTrue(download.canResume());
             assertFalse(Files.exists(target));
-            assertEquals(3L * 1024 * 1024, download.bytes());
+            assertEquals(3L * 1024 * 1024, download.transferredBytes());
             assertTrue(running.transfers.sessions().awaitDetached(download.transferId(), Duration.ofSeconds(5)));
             connect(c, view, running.server.port());
             view.clear();
@@ -317,8 +317,8 @@ class ClientControllerIntegrationTest {
             assertEquals(-1, Files.mismatch(source, target));
             assertEquals(FileHashes.sha256(source), FileHashes.sha256(target));
             System.out.println("SWING_CONTROLLER_RESUME uploadBefore=" + sentBefore + " uploadAfter="
-                    + (client.metrics().sentDataBytes() - sentBefore) + " downloadBefore=" + download.bytes()
-                    + " downloadAfter=" + (client.metrics().receivedDataBytes() - download.bytes()));
+                    + (client.metrics().sentDataBytes() - sentBefore) + " downloadBefore=" + download.transferredBytes()
+                    + " downloadAfter=" + (client.metrics().receivedDataBytes() - download.transferredBytes()));
         }
     }
 
@@ -427,7 +427,7 @@ class ClientControllerIntegrationTest {
             UiSnapshot failure = view.await(s -> !s.busy() && s.state() == UiState.FAILED);
             assertEquals("keep me", Files.readString(target));
             assertEquals(UiState.FAILED, failure.transfers().getLast().status());
-            assertFalse(failure.transfers().getLast().resumable());
+            assertFalse(failure.transfers().getLast().canResume());
         }
     }
 }

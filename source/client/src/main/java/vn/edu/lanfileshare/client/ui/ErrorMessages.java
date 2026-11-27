@@ -1,56 +1,78 @@
 package vn.edu.lanfileshare.client.ui;
 
-import java.io.*;
-import java.net.*;
-import java.nio.file.*;
+import java.io.EOFException;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.net.ConnectException;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.NoSuchFileException;
 import vn.edu.lanfileshare.client.network.ServerResponseException;
 import vn.edu.lanfileshare.client.transfer.TransferInterruptedException;
 import vn.edu.lanfileshare.common.error.ErrorCode;
 import vn.edu.lanfileshare.common.protocol.ProtocolException;
 
-/** User-facing messages deliberately exclude Java traces and internal server paths. */
+/** Chuyển lỗi dịch vụ thành thông báo để người dùng biết bước xử lý tiếp theo. */
 public final class ErrorMessages {
+    private static final int MAX_DETAIL_LENGTH = 240;
+
     private ErrorMessages() {
     }
 
     public static String describe(Throwable error) {
-        if (error instanceof TransferInterruptedException)
+        if (error instanceof TransferInterruptedException) {
             return "Transfer interrupted. Progress was saved. Reconnect to the same server, then select Resume.";
-        if (error instanceof ServerResponseException response)
-            return code(response.code());
-        if (error instanceof ProtocolException protocol)
-            return code(protocol.code());
-        if (error instanceof UnknownHostException)
+        }
+        if (error instanceof ServerResponseException response) {
+            return describeServerError(response.code());
+        }
+        if (error instanceof ProtocolException protocol) {
+            return describeServerError(protocol.code());
+        }
+        if (error instanceof UnknownHostException) {
             return "Cannot resolve server address. Check the IP or hostname.";
-        if (error instanceof ConnectException)
+        }
+        if (error instanceof ConnectException) {
             return "Cannot connect to server. Check IP, TCP port, firewall and whether the server is running.";
-        if (error instanceof SocketTimeoutException)
+        }
+        if (error instanceof SocketTimeoutException) {
             return "Connection timeout. The server did not respond in time.";
-        if (error instanceof EOFException || error instanceof SocketException)
+        }
+        if (error instanceof EOFException || error instanceof SocketException) {
             return "Server disconnected. Reconnect before trying again.";
-        if (error instanceof AccessDeniedException || error instanceof SecurityException)
+        }
+        if (error instanceof AccessDeniedException || error instanceof SecurityException) {
             return "Storage permission denied. Choose a writable folder or readable source file.";
-        if (error instanceof FileAlreadyExistsException)
+        }
+        if (error instanceof FileAlreadyExistsException) {
             return "Destination already exists. Choose a new name; existing files are never overwritten.";
-        if (error instanceof NoSuchFileException || error instanceof FileNotFoundException)
+        }
+        if (error instanceof NoSuchFileException || error instanceof FileNotFoundException) {
             return "File or folder not found. Check the source, destination and checkpoint.";
-        if (error instanceof IllegalArgumentException)
+        }
+        if (error instanceof IllegalArgumentException) {
             return error.getMessage();
-        if (error instanceof IOException)
+        }
+        if (error instanceof IOException) {
             return "File or network operation failed. Check file validity, permissions, available space and connection. "
                     + safeDetail(error.getMessage());
+        }
         return "Operation failed. Check the application log and try again.";
     }
 
     private static String safeDetail(String message) {
-        // Local IOException details help distinguish validation failures; never show multi-line traces.
-        if (message == null)
+        // Chi tiết I/O cục bộ chỉ hiển thị dòng đầu để tránh đưa cả log lên hộp thoại.
+        if (message == null) {
             return "";
-        return message.lines().findFirst().orElse("").substring(0,
-                Math.min(message.lines().findFirst().orElse("").length(), 240));
+        }
+        String firstLine = message.lines().findFirst().orElse("");
+        return firstLine.substring(0, Math.min(firstLine.length(), MAX_DETAIL_LENGTH));
     }
 
-    private static String code(ErrorCode code) {
+    private static String describeServerError(ErrorCode code) {
         return switch (code) {
         case HASH_MISMATCH -> "Hash mismatch. The file was not accepted as complete.";
         case TRANSFER_CHANGED ->

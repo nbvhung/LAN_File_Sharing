@@ -1,6 +1,6 @@
 package vn.edu.lanfileshare.client.ui;
 
-/** All calls run on the Swing EDT; usable with a headless test view. */
+/** Nhận trạng thái và thông báo từ controller trên EDT để cập nhật giao diện. */
 public interface ClientView {
     void render(UiSnapshot snapshot);
 

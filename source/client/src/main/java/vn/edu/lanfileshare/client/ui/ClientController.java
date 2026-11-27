@@ -1,21 +1,34 @@
 package vn.edu.lanfileshare.client.ui;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import javax.swing.SwingUtilities;
-import vn.edu.lanfileshare.client.transfer.*;
+import vn.edu.lanfileshare.client.transfer.TransferInterruptedException;
+import vn.edu.lanfileshare.client.transfer.TransferProgress;
+import vn.edu.lanfileshare.client.transfer.TransferStatus;
 import vn.edu.lanfileshare.client.discovery.DiscoveredServer;
 import vn.edu.lanfileshare.client.network.ServerResponseException;
 import vn.edu.lanfileshare.client.network.TransferFailures;
 import vn.edu.lanfileshare.common.error.ErrorCode;
-import vn.edu.lanfileshare.common.model.Messages.*;
+import vn.edu.lanfileshare.common.model.Messages.Direction;
+import vn.edu.lanfileshare.common.model.Messages.FileInfo;
 
-/** EDT owns presentation state; exactly one worker owns all service operations. */
+/** Điều phối kết nối, tìm server và truyền file. EDT giữ trạng thái hiển thị, worker gọi dịch vụ. */
 public final class ClientController implements AutoCloseable {
+    private static final long PROGRESS_UPDATE_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(80);
     private static final System.Logger LOG = System.getLogger(ClientController.class.getName());
     private final ClientBackend backend;
     private final ClientView view;
@@ -25,15 +38,18 @@ public final class ClientController implements AutoCloseable {
     private List<DiscoveredServer> discoveredServers = List.of();
     private DiscoveredServer selectedServer;
     private final ExecutorService worker = daemonExecutor("lanfs-ui-worker");
+    // Dùng luồng riêng để hủy hoặc ngắt ngay cả khi worker đang chờ socket.
     private final ExecutorService control = daemonExecutor("lanfs-ui-control");
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final CompletableFuture<Void> termination = new CompletableFuture<>();
+    private final CompletableFuture<Void> shutdownCompletion = new CompletableFuture<>();
     private final List<TransferItem> transfers = new ArrayList<>();
     private List<FileInfo> files = List.of();
     private Endpoint endpoint;
-    private boolean connected, busy, disconnecting;
+    private boolean connected;
+    private boolean busy;
+    private boolean disconnecting;
     private UiState state = UiState.DISCONNECTED;
-    private String message = "Enter the server IP and TCP port to begin.";
+    private String statusMessage = "Enter the server IP and TCP port to begin.";
 
     public ClientController(ClientBackend backend, ClientView view) {
         this(backend, new ServiceServerDiscovery(), view);
@@ -44,7 +60,7 @@ public final class ClientController implements AutoCloseable {
         this.discovery = Objects.requireNonNull(discovery);
         this.backend = Objects.requireNonNull(backend);
         this.view = Objects.requireNonNull(view);
-        render();
+        renderSnapshot();
     }
 
     private static ExecutorService daemonExecutor(String name) {
@@ -57,69 +73,71 @@ public final class ClientController implements AutoCloseable {
 
     public UiSnapshot snapshot() {
         requireEdt();
-        return new UiSnapshot(state, connected, busy, closed.get(), endpoint, message, files, transfers,
+        return new UiSnapshot(state, connected, busy, closed.get(), endpoint, statusMessage, files, transfers,
                 discoveredServers, selectedServer);
     }
 
+    /** Tìm server qua UDP để người dùng chọn địa chỉ trước khi kết nối TCP. */
     public void discover(String udpPort) {
         requireEdt();
-        if (!available() || connected) {
+        if (!canStartOperation() || connected) {
             return;
         }
         final int port;
         try {
-            port = Endpoint.parse("discovery", udpPort).port();
+            port = Endpoint.requireValidPort(Integer.parseInt(udpPort.strip()), "UDP");
         } catch (IllegalArgumentException ex) {
-            notice("Invalid UDP port", "UDP port must be a number between 1 and 65535.", true);
+            view.notice("Invalid UDP port", "UDP port must be a number between 1 and 65535.", true);
             return;
         }
         discoveredServers = List.of();
         selectedServer = null;
         discoveryCancelled.set(false);
         discoveryCancellation = CompletableFuture.completedFuture(null);
-        begin(UiState.DISCOVERING, "Discovering LAN servers ... IP/port entry remains available after the search.");
-        execute(() -> {
+        startOperation(UiState.DISCOVERING, "Discovering LAN servers ... IP/port entry remains available after the search.");
+        executeInBackground(() -> {
             if (discoveryCancelled.get()) {
                 throw new CancellationException("Discovery cancelled");
             }
             return discovery.discover(port);
         }, results -> {
             if (discoveryCancelled.get()) {
-                discoveryCancelled();
+                finishCancelledDiscovery();
                 return;
             }
             discoveredServers = List.copyOf(results);
-            finish(UiState.DISCONNECTED, results.isEmpty()
+            finishOperation(UiState.DISCONNECTED, results.isEmpty()
                     ? "No servers found. You can still enter an IP and TCP port manually."
                     : "Found " + results.size() + " server(s). Select one, then click Connect.");
-            view.log(message);
+            view.log(statusMessage);
         }, error -> {
             if (discoveryCancelled.get()) {
-                discoveryCancelled();
+                finishCancelledDiscovery();
                 return;
             }
-            finish(UiState.FAILED, "Discovery failed. Enter an IP and TCP port manually. "
+            finishOperation(UiState.FAILED, "Discovery failed. Enter an IP and TCP port manually. "
                     + ErrorMessages.describe(error));
-            view.log(message);
-            notice("Discovery unavailable", message, true);
+            view.log(statusMessage);
+            view.notice("Discovery unavailable", statusMessage, true);
         });
     }
 
     public void selectServer(DiscoveredServer server) {
         requireEdt();
-        if (!available() || connected) {
+        if (!canStartOperation() || connected) {
             return;
         }
         if (server != null && !discoveredServers.contains(server)) {
-            notice("Server unavailable", "Select a server from the current discovery results.", false);
+            view.notice("Server unavailable", "Select a server from the current discovery results.", false);
             return;
         }
         selectedServer = server;
-        message = server == null ? "Choose a discovered server or enter an IP manually."
+        statusMessage = server == null ? "Choose a discovered server or enter an IP manually."
                 : "Selected " + server.host() + ":" + server.tcpPort() + ". Click Connect to confirm.";
-        render();
+        renderSnapshot();
     }
 
+    /** Gửi lệnh hủy sang luồng điều khiển để lượt tìm có thể thoát khi đang chờ UDP. */
     public void cancelDiscovery() {
         requireEdt();
         if (closed.get() || !busy || state != UiState.DISCOVERING || discoveryCancelled.get()) {
@@ -128,8 +146,8 @@ public final class ClientController implements AutoCloseable {
         CompletableFuture<Void> cancelled = new CompletableFuture<>();
         discoveryCancellation = cancelled;
         discoveryCancelled.set(true);
-        message = "Cancelling discovery ...";
-        render();
+        statusMessage = "Cancelling discovery ...";
+        renderSnapshot();
         control.execute(() -> {
             try {
                 discovery.cancel();
@@ -141,193 +159,234 @@ public final class ClientController implements AutoCloseable {
         });
     }
 
-    private void discoveryCancelled() {
-        // Keep busy until the control task has completed, so a late Cancel cannot
-        // close the socket of a newly started search. Never wait on the EDT.
-        discoveryCancellation.whenComplete((ignored, error) -> post(() -> {
+    private void finishCancelledDiscovery() {
+        // Chỉ mở lượt tìm mới sau khi lần hủy hiện tại hoàn tất.
+        // Nếu tìm quá sớm, lệnh hủy cũ có thể đóng socket của lượt mới.
+        discoveryCancellation.whenComplete((ignored, error) -> enqueueOnEdt(() -> {
             discoveredServers = List.of();
             selectedServer = null;
-            finish(error == null ? UiState.DISCONNECTED : UiState.FAILED, error == null
-                    ? "Discovery cancelled. Manual IP/port connection is available."
-                    : "Discovery cancellation failed. You can still connect by IP/port manually.");
-            view.log(message);
+            if (error == null) {
+                finishOperation(UiState.DISCONNECTED, "Discovery cancelled. Manual IP/port connection is available.");
+            } else {
+                finishOperation(UiState.FAILED,
+                        "Discovery cancellation failed. You can still connect by IP/port manually.");
+            }
+            view.log(statusMessage);
         }));
     }
 
+    /** Mở kết nối TCP rồi lấy danh sách file để hiển thị ngay khi kết nối xong. */
     public void connect(String host, String port) {
         requireEdt();
-        if (!available())
+        if (!canStartOperation()) {
             return;
+        }
         final Endpoint target;
         try {
             target = Endpoint.parse(host, port);
         } catch (IllegalArgumentException ex) {
-            notice("Invalid server", ex.getMessage(), true);
+            view.notice("Invalid server", ex.getMessage(), true);
             return;
         }
         files = List.of();
         endpoint = target;
-        begin(UiState.CONNECTING, "Connecting to " + target + " ...");
-        execute(() -> {
+        startOperation(UiState.CONNECTING, "Connecting to " + target + " ...");
+        executeInBackground(() -> {
             backend.connect(target);
             return backend.listFiles();
         }, result -> {
             connected = true;
             files = result;
-            finish(UiState.CONNECTED, fileSummary());
+            finishOperation(UiState.CONNECTED, fileSummary());
             view.log("Connected to " + target + "; " + fileSummary());
         }, error -> operationFailed("Cannot connect to server", error));
     }
 
     public void refresh() {
         requireEdt();
-        if (!available() || !requireConnection())
+        if (!canStartOperation() || !ensureConnected()) {
             return;
-        begin(UiState.CONNECTED, "Refreshing server files ...");
-        execute(backend::listFiles, result -> {
+        }
+        startOperation(UiState.CONNECTED, "Refreshing server files ...");
+        executeInBackground(backend::listFiles, result -> {
             files = result;
-            finish(UiState.CONNECTED, fileSummary());
+            finishOperation(UiState.CONNECTED, fileSummary());
             view.log(fileSummary());
         }, error -> operationFailed("Refresh failed", error));
     }
 
     public void upload(Path source) {
         requireEdt();
-        if (!available() || !requireConnection())
+        if (!canStartOperation() || !ensureConnected()) {
             return;
-        if (source == null)
+        }
+        if (source == null) {
             return;
-        TransferItem item = new TransferItem(UUID.randomUUID(), null, source.getFileName().toString(), Direction.UPLOAD,
-                endpoint, source.toAbsolutePath().normalize(), null, 0, 0, 0, 0, UiState.VERIFYING,
-                "Checking source and calculating SHA-256 ...");
+        }
+        TransferItem item = TransferItem.forUpload(endpoint, source);
         transfers.add(item);
-        runTransfer(item, false);
+        runTransfer(item, false, null);
     }
 
     public void download(FileInfo file, Path destination) {
         requireEdt();
-        if (!available() || !requireConnection())
-            return;
-        if (file == null) {
-            notice("Select a file", "Select a server file before clicking Download.", false);
+        if (!canStartOperation() || !ensureConnected()) {
             return;
         }
-        if (destination == null)
+        if (file == null) {
+            view.notice("Select a file", "Select a server file before clicking Download.", false);
             return;
-        TransferItem item = new TransferItem(UUID.randomUUID(), null, file.name(), Direction.DOWNLOAD, endpoint,
-                destination.toAbsolutePath().normalize(), null, 0, file.size(), 0, 0, UiState.DOWNLOADING,
-                "Requesting download ...");
+        }
+        if (destination == null) {
+            return;
+        }
+        TransferItem item = TransferItem.forDownload(endpoint, file, destination);
         transfers.add(item);
         runTransfer(item, false, file.fileId());
     }
 
+    /** Tiếp tục từ checkpoint sau khi đã kết nối lại đúng server. */
     public void resume(UUID rowId) {
         requireEdt();
-        if (!available() || !requireConnection())
+        if (!canStartOperation() || !ensureConnected()) {
             return;
-        TransferItem item = transfers.stream().filter(row -> row.rowId().equals(rowId)).findFirst().orElse(null);
-        if (item == null || !item.resumable()) {
-            notice("Resume unavailable", "Select an Interrupted transfer with a saved checkpoint.", false);
+        }
+        TransferItem item = findTransferByRowId(rowId);
+        if (item == null || !item.canResume()) {
+            view.notice("Resume unavailable", "Select an Interrupted transfer with a saved checkpoint.", false);
             return;
         }
         if (!item.endpoint().equals(endpoint)) {
-            notice("Different server", "Reconnect to " + item.endpoint() + " before resuming this transfer.", true);
+            view.notice("Different server", "Reconnect to " + item.endpoint() + " before resuming this transfer.", true);
             return;
         }
-        runTransfer(item, true);
+        runTransfer(item, true, null);
     }
 
-    private void runTransfer(TransferItem item, boolean resume) {
-        runTransfer(item, resume, null);
-    }
+    /** Cập nhật trạng thái hàng trước khi giao lượt truyền cho worker. */
+    private void runTransfer(TransferItem item, boolean resume, UUID downloadFileId) {
+        if (resume) {
+            updateTransferItem(item.withProgress(item.transferredBytes(), item.totalBytes(), item.percentage(), 0,
+                    UiState.RESUMING, "Validating checkpoint and resuming ..."));
+            startOperation(UiState.RESUMING, "Resuming " + item.fileName());
+        } else {
+            startOperation(item.status(), "Preparing " + item.fileName());
+        }
 
-    private void runTransfer(TransferItem item, boolean resume, UUID fileId) {
-        UiState starting = resume ? UiState.RESUMING : item.status();
-        replace(item.progress(item.bytes(), item.total(), item.percentage(), 0, starting,
-                resume ? "Validating checkpoint and resuming ..." : item.detail()));
-        begin(starting, (resume ? "Resuming " : "Preparing ") + item.name());
         ProgressPump progress = new ProgressPump(item.rowId(), item.direction());
-        execute(() -> {
-            if (!resume && item.direction() == Direction.UPLOAD) {
-                long size = java.nio.file.Files.size(item.localPath());
-                post(() -> {
-                    TransferItem current = find(item.rowId());
-                    replace(current.progress(0, size, 0, 0, UiState.VERIFYING, "Calculating source SHA-256 ..."));
-                    render();
-                });
-            }
-            ClientBackend.Outcome result = resume ? backend.resume(item, progress::accept)
-                    : item.direction() == Direction.UPLOAD ? backend.upload(item.localPath(), progress::accept)
-                            : backend.download(fileId, item.localPath(), progress::accept);
-            List<FileInfo> refreshed = null;
-            String warning = null;
-            if (item.direction() == Direction.UPLOAD) {
-                try {
-                    refreshed = backend.listFiles();
-                } catch (IOException ex) {
-                    warning = ErrorMessages.describe(ex);
-                    LOG.log(System.Logger.Level.WARNING, "Post-upload refresh failed", ex);
-                }
-            }
-            return new Finished(result, refreshed, warning, backend.connected());
-        }, done -> {
-            TransferItem current = find(item.rowId());
-            replace(current.progress(done.result.file().size(), done.result.file().size(), 100,
-                    current.bytesPerSecond(), UiState.COMPLETED, "SHA-256 verified").identity(done.result.transferId(),
-                            current.checkpoint(), done.result.file().size(), UiState.COMPLETED, "SHA-256 verified"));
-            connected = done.connected;
-            if (done.files != null)
-                files = done.files;
-            finish(UiState.COMPLETED, item.name() + " completed. SHA-256 verified.");
-            view.log(item.direction() + " completed: " + item.name() + " | transferId=" + done.result.transferId()
-                    + " | sha256=" + done.result.file().sha256());
-            if (done.warning != null)
-                view.log("Upload completed, but refresh failed: " + done.warning);
-            notice("Transfer completed", item.name() + "\nSHA-256 verified."
-                    + (done.warning == null ? "" : "\nRefresh failed: " + done.warning), false);
-        }, error -> {
-            TransferItem current = find(item.rowId());
-            if (error instanceof TransferInterruptedException interrupted) {
-                replace(current.identity(interrupted.transferId(), interrupted.checkpoint(), interrupted.nextOffset(),
-                        UiState.INTERRUPTED, "Progress saved. Reconnect to " + item.endpoint() + " and Resume."));
-                connected = false;
-                finish(UiState.INTERRUPTED, "Transfer interrupted; checkpoint saved.");
-                view.log("Interrupted: " + item.name() + " | transferId=" + interrupted.transferId() + " | nextOffset="
-                        + interrupted.nextOffset() + " | checkpoint=" + interrupted.checkpoint());
-                notice("Transfer interrupted", ErrorMessages.describe(error), false);
-            } else if (resume && item.resumable() && (TransferFailures.interrupted(error)
-                    || error instanceof ServerResponseException response && response.code() == ErrorCode.SERVER_BUSY)) {
-                // A rejected/timed-out resume query has not invalidated the old checkpoint.
-                String detail = "Resume failed: " + ErrorMessages.describe(error);
-                replace(current.progress(current.bytes(), current.total(), current.percentage(), 0, UiState.INTERRUPTED,
-                        detail));
-                finish(UiState.INTERRUPTED, detail);
-                view.log(detail);
-                notice("Resume failed", detail, true);
-            } else {
-                replace(current.progress(current.bytes(), current.total(), current.percentage(), 0, UiState.FAILED,
-                        ErrorMessages.describe(error)));
-                operationFailed(resume ? "Resume failed" : "Transfer failed", error);
-            }
-        });
+        executeInBackground(() -> performTransfer(item, resume, downloadFileId, progress),
+                result -> transferSucceeded(item, result),
+                error -> transferFailed(item, resume, error));
     }
 
-    private record Finished(ClientBackend.Outcome result, List<FileInfo> files, String warning, boolean connected) {
+    /** Gọi dịch vụ trên worker và thử tải lại danh sách file sau upload. */
+    private TransferCompletion performTransfer(TransferItem item, boolean resume, UUID downloadFileId,
+            ProgressPump progress) throws IOException {
+        ClientBackend.Outcome outcome;
+        if (resume) {
+            outcome = backend.resume(item, progress::accept);
+        } else if (item.direction() == Direction.UPLOAD) {
+            long size = Files.size(item.localPath());
+            enqueueOnEdt(() -> {
+                TransferItem current = findTransferByRowId(item.rowId());
+                updateTransferItem(current.withProgress(0, size, 0, 0, UiState.VERIFYING,
+                        "Calculating source SHA-256 ..."));
+                renderSnapshot();
+            });
+            outcome = backend.upload(item.localPath(), progress::accept);
+        } else {
+            outcome = backend.download(downloadFileId, item.localPath(), progress::accept);
+        }
+
+        List<FileInfo> refreshedFiles = null;
+        String refreshWarning = null;
+        if (item.direction() == Direction.UPLOAD) {
+            try {
+                refreshedFiles = backend.listFiles();
+            } catch (IOException ex) {
+                // Upload đã thành công. Chỉ báo riêng lỗi làm mới danh sách.
+                refreshWarning = ErrorMessages.describe(ex);
+                LOG.log(System.Logger.Level.WARNING, "Post-upload refresh failed", ex);
+            }
+        }
+        return new TransferCompletion(outcome, refreshedFiles, refreshWarning, backend.connected());
     }
 
-    /** Disconnect closes the socket on a separate control thread, including while receive() holds the service lock. */
+    /** Đánh dấu hoàn tất sau khi dịch vụ xác nhận kết quả. */
+    private void transferSucceeded(TransferItem item, TransferCompletion completion) {
+        TransferItem current = findTransferByRowId(item.rowId());
+        ClientBackend.Outcome outcome = completion.outcome();
+        long size = outcome.file().size();
+        String verified = "SHA-256 verified";
+        updateTransferItem(current.completed(outcome.transferId(), size, verified));
+
+        connected = completion.connected();
+        if (completion.refreshedFiles() != null) {
+            files = completion.refreshedFiles();
+        }
+        finishOperation(UiState.COMPLETED, item.fileName() + " completed. SHA-256 verified.");
+        view.log(item.direction() + " completed: " + item.fileName() + " | transferId=" + outcome.transferId()
+                + " | sha256=" + outcome.file().sha256());
+
+        String noticeText = item.fileName() + "\nSHA-256 verified.";
+        if (completion.refreshWarning() != null) {
+            view.log("Upload completed, but refresh failed: " + completion.refreshWarning());
+            noticeText += "\nRefresh failed: " + completion.refreshWarning();
+        }
+        view.notice("Transfer completed", noticeText, false);
+    }
+
+    /** Giữ lại hàng có thể Resume nếu dịch vụ đã lưu checkpoint. */
+    private void transferFailed(TransferItem item, boolean resume, Exception error) {
+        TransferItem current = findTransferByRowId(item.rowId());
+        if (error instanceof TransferInterruptedException interrupted) {
+            String detail = "Progress saved. Reconnect to " + item.endpoint() + " and Resume.";
+            updateTransferItem(current.interruptedAt(interrupted.transferId(), interrupted.checkpoint(),
+                    interrupted.nextOffset(), detail));
+            connected = false;
+            finishOperation(UiState.INTERRUPTED, "Transfer interrupted; checkpoint saved.");
+            view.log("Interrupted: " + item.fileName() + " | transferId=" + interrupted.transferId() + " | nextOffset="
+                    + interrupted.nextOffset() + " | checkpoint=" + interrupted.checkpoint());
+            view.notice("Transfer interrupted", ErrorMessages.describe(error), false);
+            return;
+        }
+
+        boolean serverBusy = error instanceof ServerResponseException response
+                && response.code() == ErrorCode.SERVER_BUSY;
+        if (resume && item.canResume() && (TransferFailures.interrupted(error) || serverBusy)) {
+            // Lỗi mạng hoặc server bận khi hỏi resume vẫn cho phép thử lại với checkpoint cũ.
+            String detail = "Resume failed: " + ErrorMessages.describe(error);
+            updateTransferItem(current.withProgress(current.transferredBytes(), current.totalBytes(), current.percentage(),
+                    0, UiState.INTERRUPTED, detail));
+            finishOperation(UiState.INTERRUPTED, detail);
+            view.log(detail);
+            view.notice("Resume failed", detail, true);
+            return;
+        }
+
+        updateTransferItem(current.withProgress(current.transferredBytes(), current.totalBytes(), current.percentage(),
+                0, UiState.FAILED, ErrorMessages.describe(error)));
+        operationFailed(resume ? "Resume failed" : "Transfer failed", error);
+    }
+
+    private record TransferCompletion(ClientBackend.Outcome outcome, List<FileInfo> refreshedFiles, String refreshWarning,
+            boolean connected) {
+    }
+
+    /** Ngắt qua luồng điều khiển nếu worker đang bận với TCP. Khi rảnh, worker tự đóng phiên. */
     public void disconnect() {
         requireEdt();
-        if (closed.get() || disconnecting)
+        if (closed.get() || disconnecting) {
             return;
+        }
         if (busy && state == UiState.DISCOVERING) {
             cancelDiscovery();
             return;
         }
         if (busy) {
             disconnecting = true;
-            message = "Disconnecting; preserving transfer progress ...";
-            render();
+            statusMessage = "Disconnecting; preserving transfer progress ...";
+            renderSnapshot();
             control.execute(() -> {
                 try {
                     backend.interrupt();
@@ -337,162 +396,184 @@ public final class ClientController implements AutoCloseable {
             });
             return;
         }
-        begin(UiState.DISCONNECTED, "Disconnecting ...");
-        execute(() -> {
+        startOperation(UiState.DISCONNECTED, "Disconnecting ...");
+        executeInBackground(() -> {
             backend.disconnect();
-            return Boolean.TRUE;
+            return null; // Ngắt kết nối không có dữ liệu trả về.
         }, ignored -> {
             connected = false;
             files = List.of();
-            finish(UiState.DISCONNECTED, "Disconnected. Transfer history was kept.");
+            finishOperation(UiState.DISCONNECTED, "Disconnected. Transfer history was kept.");
             view.log("Disconnected.");
         }, error -> operationFailed("Disconnect failed", error));
     }
 
+    /** Nhận callback tiến độ từ dịch vụ truyền trên worker. */
     private final class ProgressPump {
-        private final UUID id;
+        private final UUID rowId;
         private final Direction direction;
-        private long last, started, baseline;
+        private long lastUpdateNanos;
+        private long startedNanos;
+        private long startingBytes;
 
-        private ProgressPump(UUID id, Direction direction) {
-            this.id = id;
+        private ProgressPump(UUID rowId, Direction direction) {
+            this.rowId = rowId;
             this.direction = direction;
         }
 
         void accept(TransferProgress progress) {
             long now = System.nanoTime();
-            if (started == 0) {
-                started = now;
-                baseline = progress.bytesTransferred();
+            if (startedNanos == 0) {
+                startedNanos = now;
+                startingBytes = progress.bytesTransferred();
             }
-            boolean important = progress.status() == TransferStatus.VERIFYING
+            boolean verificationUpdate = progress.status() == TransferStatus.VERIFYING
                     || progress.status() == TransferStatus.COMPLETED;
-            if (last != 0 && now - last < 80_000_000 && !important)
+            // Giới hạn lần vẽ thường ở 80 ms để nút bấm vẫn phản hồi. Giai đoạn xác minh được vẽ ngay.
+            if (!verificationUpdate && lastUpdateNanos != 0 && now - lastUpdateNanos < PROGRESS_UPDATE_INTERVAL_NANOS) {
                 return;
-            last = now;
-            double speed = Math.max(0, progress.bytesTransferred() - baseline) * 1_000_000_000.0
-                    / Math.max(1, now - started);
-            UiState next = important ? UiState.VERIFYING
-                    : direction == Direction.UPLOAD ? UiState.UPLOADING : UiState.DOWNLOADING;
-            double percent = Math.min(99.9, progress.percentage());
-            post(() -> {
-                TransferItem current = find(id);
-                replace(current.progress(progress.bytesTransferred(), progress.totalBytes(), percent, speed, next,
-                        important ? "Verifying SHA-256 and confirming completion ..."
+            }
+            lastUpdateNanos = now;
+            // Trừ số byte của callback đầu để tốc độ không tính cả phần đã lưu trước khi Resume.
+            long bytesSinceStart = Math.max(0, progress.bytesTransferred() - startingBytes);
+            // Đổi nanosecond sang giây. Chặn mẫu số ở ít nhất 1 ns khi hai mốc thời gian trùng nhau.
+            long elapsedNanos = Math.max(1, now - startedNanos);
+            double elapsedSeconds = (double) elapsedNanos / TimeUnit.SECONDS.toNanos(1);
+            double bytesPerSecond = bytesSinceStart / elapsedSeconds;
+            UiState transferState = direction == Direction.UPLOAD ? UiState.UPLOADING : UiState.DOWNLOADING;
+            UiState newState = verificationUpdate ? UiState.VERIFYING : transferState;
+            // Chỉ hiển thị 100% sau khi dịch vụ xác nhận truyền file thành công.
+            double percentage = Math.min(TransferItem.MAX_INCOMPLETE_PERCENTAGE, progress.percentage());
+            // Hàng transfer và trạng thái của controller chỉ được sửa trên EDT.
+            enqueueOnEdt(() -> {
+                TransferItem current = findTransferByRowId(rowId);
+                updateTransferItem(current.withProgress(progress.bytesTransferred(), progress.totalBytes(), percentage,
+                        bytesPerSecond, newState, verificationUpdate ? "Verifying SHA-256 and confirming completion ..."
                                 : "Transferring binary data ..."));
-                state = next;
-                message = current.name() + " - " + next;
-                render();
+                state = newState;
+                statusMessage = current.fileName() + " - " + newState;
+                renderSnapshot();
             });
         }
     }
 
-    private <T> void execute(Callable<T> task, Consumer<T> success, Consumer<Exception> failure) {
+    /**
+     * Chạy thao tác mạng hoặc file trên worker để EDT tiếp tục nhận thao tác người dùng.
+     * Đưa cả kết quả lẫn lỗi về EDT trước khi cập nhật trạng thái và giao diện.
+     */
+    private <T> void executeInBackground(Callable<T> operation, Consumer<T> onSuccess, Consumer<Exception> onFailure) {
         worker.execute(() -> {
             try {
-                T result = task.call();
-                post(() -> success.accept(result));
+                T result = operation.call();
+                enqueueOnEdt(() -> onSuccess.accept(result));
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.WARNING, "Desktop operation failed", ex);
-                // connected() is deliberately queried on the worker, never on the EDT.
-                boolean live = backend.connected();
-                post(() -> {
-                    connected = live;
-                    failure.accept(ex);
+                // Truy vấn trạng thái backend trên worker vì có thể chờ khóa của dịch vụ.
+                boolean stillConnected = backend.connected();
+                enqueueOnEdt(() -> {
+                    connected = stillConnected;
+                    onFailure.accept(ex);
                 });
             }
         });
     }
 
-    private void post(Runnable action) {
+    private void enqueueOnEdt(Runnable action) {
+        // Khi cửa sổ đã đóng, kết quả đang chờ trong hàng đợi không còn cần vẽ.
         SwingUtilities.invokeLater(() -> {
-            if (!closed.get())
+            if (!closed.get()) {
                 action.run();
+            }
         });
     }
 
     private void operationFailed(String title, Exception error) {
-        finish(UiState.FAILED, ErrorMessages.describe(error));
-        view.log(title + ": " + message);
-        notice(title, message, true);
+        finishOperation(UiState.FAILED, ErrorMessages.describe(error));
+        view.log(title + ": " + statusMessage);
+        view.notice(title, statusMessage, true);
     }
 
-    private boolean available() {
+    private boolean canStartOperation() {
         return !closed.get() && !busy;
     }
 
-    private boolean requireConnection() {
-        if (connected)
+    private boolean ensureConnected() {
+        if (connected) {
             return true;
-        notice("Not connected", "Connect to a server first.", false);
+        }
+        view.notice("Not connected", "Connect to a server first.", false);
         return false;
     }
 
-    private void begin(UiState next, String text) {
+    private void startOperation(UiState newState, String newStatusMessage) {
         busy = true;
         disconnecting = false;
-        state = next;
-        message = text;
-        render();
+        state = newState;
+        statusMessage = newStatusMessage;
+        renderSnapshot();
     }
 
-    private void finish(UiState next, String text) {
+    private void finishOperation(UiState newState, String newStatusMessage) {
         busy = false;
         disconnecting = false;
-        state = next;
-        message = text;
-        render();
+        state = newState;
+        statusMessage = newStatusMessage;
+        renderSnapshot();
     }
 
     private String fileSummary() {
         return files.isEmpty() ? "No files on this server." : files.size() + " completed file(s) available.";
     }
 
-    private TransferItem find(UUID id) {
-        return transfers.stream().filter(item -> item.rowId().equals(id)).findFirst().orElseThrow();
+    private TransferItem findTransferByRowId(UUID rowId) {
+        for (TransferItem item : transfers) {
+            if (item.rowId().equals(rowId)) {
+                return item;
+            }
+        }
+        return null;
     }
 
-    private void replace(TransferItem row) {
-        for (int i = 0; i < transfers.size(); i++)
-            if (transfers.get(i).rowId().equals(row.rowId())) {
-                transfers.set(i, row);
+    private void updateTransferItem(TransferItem updatedItem) {
+        for (int row = 0; row < transfers.size(); row++) {
+            if (transfers.get(row).rowId().equals(updatedItem.rowId())) {
+                transfers.set(row, updatedItem);
                 return;
             }
+        }
         throw new IllegalStateException("Unknown UI transfer row");
     }
 
-    private void notice(String title, String text, boolean error) {
-        view.notice(title, text, error);
-    }
-
-    private void render() {
+    private void renderSnapshot() {
         view.render(snapshot());
     }
 
+    /** Hoàn tất khi luồng điều khiển đã đóng discovery và kết nối. */
     public CompletableFuture<Void> termination() {
-        return termination;
+        return shutdownCompletion;
     }
 
     @Override
+    /** Đóng cửa sổ trên EDT và giao việc giải phóng kết nối cho luồng điều khiển. */
     public void close() {
         requireEdt();
-        if (!closed.compareAndSet(false, true))
+        if (!closed.compareAndSet(false, true)) {
             return;
+        }
         discoveryCancelled.set(true);
-        message = "Closing connection ...";
-        render();
-        // Interrupt the socket, not FileChannel writes: a thread interrupt could turn
-        // a resumable disconnect into ClosedByInterruptException during checkpoint I/O.
+        statusMessage = "Closing connection ...";
+        renderSnapshot();
+        // Đóng socket để worker thoát I/O. Không ngắt worker giữa lúc dịch vụ đang ghi checkpoint.
         worker.shutdown();
         control.execute(() -> {
             try {
                 discovery.close();
                 backend.interrupt();
                 backend.close();
-                termination.complete(null);
+                shutdownCompletion.complete(null);
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.WARNING, "Desktop shutdown failed", ex);
-                termination.completeExceptionally(ex);
+                shutdownCompletion.completeExceptionally(ex);
             } finally {
                 control.shutdown();
             }
@@ -500,14 +581,15 @@ public final class ClientController implements AutoCloseable {
         view.closed();
     }
 
-    static void requireWorker() {
+    static void requireOffEdt() {
         if (SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Service operations must run off the EDT");
         }
     }
 
     static void requireEdt() {
-        if (!SwingUtilities.isEventDispatchThread())
+        if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("UI state must be accessed on the EDT");
+        }
     }
 }

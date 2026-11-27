@@ -3,18 +3,22 @@ package vn.edu.lanfileshare.client.ui;
 import java.awt.*;
 import javax.swing.*;
 
+/** Hiển thị lịch sử truyền file, tiến độ và nút Resume cho hàng được chọn. */
 public final class TransferPanel extends JPanel {
+    private static final int PROGRESS_STEPS_PER_PERCENT = 100;
+    private static final int MAX_PROGRESS = 100 * PROGRESS_STEPS_PER_PERCENT;
+
     final TransferTableModel model = new TransferTableModel();
     final JTable table = new JTable(model);
     final JButton resume = UiTheme.button("Resume selected");
-    private final JProgressBar progress = new JProgressBar(0, 10000);
+    private final JProgressBar progress = new JProgressBar(0, MAX_PROGRESS);
     private final JLabel summary = new JLabel("No transfers yet. Upload a file or select a file to download.");
     private final JTextField detail = new JTextField();
-    private UiSnapshot latest;
+    private UiSnapshot latestSnapshot;
 
     public TransferPanel() {
         super(new BorderLayout(0, 10));
-        UiTheme.card(this, "Transfers");
+        UiTheme.stylePanel(this);
         JPanel top = new JPanel(new BorderLayout());
         top.setOpaque(false);
         top.add(UiTheme.heading("Transfers"), BorderLayout.WEST);
@@ -42,33 +46,40 @@ public final class TransferPanel extends JPanel {
         table.getSelectionModel().addListSelectionListener(event -> updateDetail());
     }
 
-    public TransferItem selected() {
-        int row = table.getSelectedRow();
-        return row < 0 ? null : model.item(table.convertRowIndexToModel(row));
+    public TransferItem selectedTransfer() {
+        int viewRow = table.getSelectedRow();
+        return viewRow < 0 ? null : model.transferAt(table.convertRowIndexToModel(viewRow));
     }
 
-    void render(UiSnapshot value) {
-        latest = value;
-        int selection = table.getSelectedRow();
-        int previous = model.getRowCount();
-        model.setRows(value.transfers());
-        if ((selection < 0 || model.getRowCount() > previous) && model.getRowCount() > 0) {
-            int last = table.convertRowIndexToView(model.getRowCount() - 1);
-            table.setRowSelectionInterval(last, last);
-            table.scrollRectToVisible(table.getCellRect(last, 0, true));
+    void render(UiSnapshot snapshot) {
+        latestSnapshot = snapshot;
+        int selectedViewRow = table.getSelectedRow();
+        int previousRowCount = model.getRowCount();
+        model.setRows(snapshot.transfers());
+        int rowCount = model.getRowCount();
+        if (rowCount > 0 && (selectedViewRow < 0 || rowCount > previousRowCount)) {
+            int lastViewRow = table.convertRowIndexToView(rowCount - 1);
+            table.setRowSelectionInterval(lastViewRow, lastViewRow);
+            table.scrollRectToVisible(table.getCellRect(lastViewRow, 0, true));
         }
         updateDetail();
     }
 
     private void updateDetail() {
-        TransferItem item = selected();
-        resume.setEnabled(latest != null && latest.connected() && !latest.busy() && !latest.closing() && item != null
-                && item.resumable() && item.endpoint().equals(latest.endpoint()));
-        if (item == null)
+        TransferItem item = selectedTransfer();
+        boolean connectedAndIdle = latestSnapshot != null && latestSnapshot.connected()
+                && !latestSnapshot.busy() && !latestSnapshot.closing();
+        // Checkpoint thuộc phiên truyền trên server cũ, nên phải kết nối lại đúng endpoint.
+        boolean resumableSelection = item != null && item.canResume() && connectedAndIdle
+                && item.endpoint().equals(latestSnapshot.endpoint());
+        resume.setEnabled(resumableSelection);
+        if (item == null) {
             return;
-        summary.setText(item.name() + "  |  " + UiFormat.bytes(item.bytes()) + " / " + UiFormat.bytes(item.total())
+        }
+        summary.setText(item.fileName() + "  |  " + UiFormat.bytes(item.transferredBytes()) + " / " + UiFormat.bytes(item.totalBytes())
                 + "  |  " + UiFormat.bytes((long) item.bytesPerSecond()) + "/s  |  " + item.status());
-        progress.setValue((int) (item.percentage() * 100));
+        // Thanh tiến độ nhận số nguyên. Ví dụ 50% ứng với 5.000 trên thang 10.000.
+        progress.setValue((int) (item.percentage() * PROGRESS_STEPS_PER_PERCENT));
         progress.setString(UiFormat.percentage(item.percentage()));
         detail.setText(item.detail());
         detail.setToolTipText(item.localPath() + (item.checkpoint() == null ? "" : " | " + item.checkpoint()));

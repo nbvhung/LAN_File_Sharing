@@ -1,14 +1,17 @@
 package vn.edu.lanfileshare.client.ui;
 
 import java.awt.*;
-import java.awt.event.*;
+import java.awt.event.ActionListener;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.File;
 import java.nio.file.Path;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import vn.edu.lanfileshare.common.model.Messages.FileInfo;
+import vn.edu.lanfileshare.common.protocol.DiscoveryProtocol;
 
-/** Composes panels and local file choosers; all business actions go to the controller. */
+/** Dựng cửa sổ Swing và chuyển thao tác của người dùng cho controller. */
 public final class MainFrame extends JFrame implements ClientView {
     private final ConnectionPanel connection = new ConnectionPanel();
     private final ServerFilePanel serverFiles = new ServerFilePanel();
@@ -18,12 +21,12 @@ public final class MainFrame extends JFrame implements ClientView {
     private final JTabbedPane workspace = new JTabbedPane();
     private boolean wasBusy;
     private boolean wasConnected;
-    private int transferCount;
+    private int previousTransferCount;
     private final ClientController controller;
 
     public MainFrame(ClientBackend backend, String host, int port) {
         this(backend, new ServiceServerDiscovery(), host, port,
-                vn.edu.lanfileshare.common.protocol.DiscoveryProtocol.DEFAULT_UDP_PORT);
+                DiscoveryProtocol.DEFAULT_UDP_PORT);
     }
 
     public MainFrame(ClientBackend backend, ServerDiscovery discovery, String host, int port, int udpPort) {
@@ -32,6 +35,17 @@ public final class MainFrame extends JFrame implements ClientView {
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
         setMinimumSize(new Dimension(980, 640));
         setSize(1180, 900);
+        buildLayout();
+        connection.host.setText(host);
+        connection.port.setText(Integer.toString(port));
+        connection.udpPort.setText(Integer.toString(udpPort));
+        controller = new ClientController(backend, discovery, this);
+        bindActions();
+        setLocationRelativeTo(null);
+        logs.append("Ready. Discover and choose a server, or enter an IP/port. One transfer runs at a time.");
+    }
+
+    private void buildLayout() {
         JPanel root = new JPanel(new BorderLayout(0, 12));
         root.setBorder(new EmptyBorder(20, 24, 14, 24));
         setContentPane(root);
@@ -58,64 +72,71 @@ public final class MainFrame extends JFrame implements ClientView {
         root.add(workspace, BorderLayout.CENTER);
         footer.setForeground(UiTheme.MUTED);
         root.add(footer, BorderLayout.SOUTH);
-        connection.host.setText(host);
-        connection.port.setText(Integer.toString(port));
-        connection.udpPort.setText(Integer.toString(udpPort));
-        controller = new ClientController(backend, discovery, this);
+    }
+
+    private void bindActions() {
         connection.onSelection(controller::selectServer);
-        connection.discover.addActionListener(event -> controller.discover(connection.udpPort.getText()));
-        connection.udpPort.addActionListener(event -> controller.discover(connection.udpPort.getText()));
+        ActionListener discoverFromInput = event -> controller.discover(connection.udpPort.getText());
+        connection.discover.addActionListener(discoverFromInput);
+        connection.udpPort.addActionListener(discoverFromInput);
         connection.cancelDiscovery.addActionListener(event -> controller.cancelDiscovery());
-        connection.connect.addActionListener(event -> connect());
-        connection.host.addActionListener(event -> connect());
-        connection.port.addActionListener(event -> connect());
+        ActionListener connectFromInput = event -> controller.connect(connection.host.getText(),
+                connection.port.getText());
+        connection.connect.addActionListener(connectFromInput);
+        connection.host.addActionListener(connectFromInput);
+        connection.port.addActionListener(connectFromInput);
         connection.disconnect.addActionListener(event -> controller.disconnect());
         serverFiles.refresh.addActionListener(event -> controller.refresh());
         serverFiles.upload.addActionListener(event -> chooseUpload());
         serverFiles.download.addActionListener(event -> chooseDownload());
         transfers.resume.addActionListener(event -> {
-            TransferItem item = transfers.selected();
+            TransferItem item = transfers.selectedTransfer();
             controller.resume(item == null ? null : item.rowId());
         });
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent event) {
-                UiSnapshot value = controller.snapshot();
-                if (value.busy() && value.state() != UiState.DISCOVERING && JOptionPane.showConfirmDialog(MainFrame.this,
-                        "A task is active. Close the connection and keep any available checkpoint?",
-                        "Close application", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION)
-                    return;
-                controller.close();
+                requestClose();
             }
         });
-        setLocationRelativeTo(null);
-        logs.append("Ready. Discover and choose a server, or enter an IP/port. One transfer runs at a time.");
     }
 
-    private void connect() {
-        controller.connect(connection.host.getText(), connection.port.getText());
+    private void requestClose() {
+        // Khi đang xử lý TCP, người dùng có thể giữ cửa sổ mở để tác vụ chạy tiếp.
+        UiSnapshot snapshot = controller.snapshot();
+        if (snapshot.busy() && snapshot.state() != UiState.DISCOVERING) {
+            int answer = JOptionPane.showConfirmDialog(this,
+                    "A task is active. Close the connection and keep any available checkpoint?",
+                    "Close application", JOptionPane.YES_NO_OPTION);
+            if (answer != JOptionPane.YES_OPTION) {
+                return;
+            }
+        }
+        controller.close();
     }
 
     private void chooseUpload() {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Choose a file to upload");
         chooser.setMultiSelectionEnabled(false);
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION)
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             controller.upload(chooser.getSelectedFile().toPath());
+        }
     }
 
     private void chooseDownload() {
-        FileInfo selected = serverFiles.selected();
-        if (selected == null) {
+        FileInfo selectedFile = serverFiles.selectedFile();
+        if (selectedFile == null) {
             notice("Select a file", "Select a server file before clicking Download.", false);
             return;
         }
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Save downloaded file (existing files are not overwritten)");
-        // Server metadata is display-only: do not turn an untrusted name into a path.
-        chooser.setSelectedFile(new File(DownloadFileName.suggest(selected)));
-        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION)
-            controller.download(selected, chooser.getSelectedFile().toPath());
+        // Tên do server gửi chỉ là gợi ý. Đường dẫn đích do người dùng chọn.
+        chooser.setSelectedFile(new File(DownloadFileName.suggest(selectedFile)));
+        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            controller.download(selectedFile, chooser.getSelectedFile().toPath());
+        }
     }
 
     public ClientController controller() {
@@ -123,27 +144,28 @@ public final class MainFrame extends JFrame implements ClientView {
     }
 
     @Override
-    public void render(UiSnapshot value) {
+    public void render(UiSnapshot snapshot) {
         ClientController.requireEdt();
-        connection.render(value);
-        serverFiles.render(value);
-        transfers.render(value);
-        workspace.setTitleAt(0, "Server files (" + value.files().size() + ")");
-        workspace.setTitleAt(1, "Transfers (" + value.transfers().size() + ")");
-        boolean transferring = switch (value.state()) {
+        connection.render(snapshot);
+        serverFiles.render(snapshot);
+        transfers.render(snapshot);
+        workspace.setTitleAt(0, "Server files (" + snapshot.files().size() + ")");
+        workspace.setTitleAt(1, "Transfers (" + snapshot.transfers().size() + ")");
+        boolean transferring = switch (snapshot.state()) {
             case UPLOADING, DOWNLOADING, VERIFYING, RESUMING -> true;
             default -> false;
         };
-        if (value.busy() && transferring && (!wasBusy || value.transfers().size() > transferCount)) {
+        // Chỉ chuyển tab lúc mới bắt đầu truyền hoặc kết nối để không giành lại tab đang xem.
+        if (snapshot.busy() && transferring && (!wasBusy || snapshot.transfers().size() > previousTransferCount)) {
             workspace.setSelectedComponent(transfers);
-        } else if (value.connected() && !wasConnected) {
+        } else if (snapshot.connected() && !wasConnected) {
             workspace.setSelectedComponent(serverFiles);
         }
-        wasBusy = value.busy();
-        wasConnected = value.connected();
-        transferCount = value.transfers().size();
-        footer.setText(value.message());
-        footer.setToolTipText(value.endpoint() == null ? null : value.endpoint().toString());
+        wasBusy = snapshot.busy();
+        wasConnected = snapshot.connected();
+        previousTransferCount = snapshot.transfers().size();
+        footer.setText(snapshot.message());
+        footer.setToolTipText(snapshot.endpoint() == null ? null : snapshot.endpoint().toString());
     }
 
     @Override

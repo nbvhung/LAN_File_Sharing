@@ -9,6 +9,7 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import vn.edu.lanfileshare.client.discovery.DiscoveredServer;
 
+/** Hiển thị địa chỉ TCP nhập tay và kết quả tìm server qua UDP. */
 public final class ConnectionPanel extends JPanel {
     final JTextField host = new JTextField("127.0.0.1", 17);
     final JTextField port = new JTextField("49000", 6);
@@ -20,14 +21,14 @@ public final class ConnectionPanel extends JPanel {
     final JComboBox<DiscoveredServer> servers = new JComboBox<>();
     private final JLabel status = new JLabel("Disconnected");
     private final JLabel searchStatus = new JLabel("Manual IP entry is always available.");
-    private Consumer<DiscoveredServer> selection = value -> { };
-    private List<DiscoveredServer> displayed = List.of();
+    private Consumer<DiscoveredServer> serverSelectionListener = value -> { };
+    private List<DiscoveredServer> displayedServers = List.of();
     private DiscoveredServer displayedSelection;
-    private boolean updating;
+    private boolean updatingServerChoices;
 
     public ConnectionPanel() {
         super(new BorderLayout(12, 10));
-        UiTheme.card(this, "Connection");
+        UiTheme.stylePanel(this);
         JPanel fields = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
         fields.setOpaque(false);
         fields.add(new JLabel("Server IP"));
@@ -54,7 +55,6 @@ public final class ConnectionPanel extends JPanel {
         discoveryRow.add(cancelDiscovery, cell);
         cell.weightx = 1;
         cell.fill = GridBagConstraints.HORIZONTAL;
-        servers.setPrototypeDisplayValue(null);
         servers.setPreferredSize(new Dimension(280, 30));
         servers.setRenderer(new DefaultListCellRenderer() {
             @Override
@@ -83,30 +83,31 @@ public final class ConnectionPanel extends JPanel {
         udpPort.setToolTipText("UDP discovery port; independent from the TCP file transfer port");
         servers.setToolTipText("Select an endpoint, then click Connect. Discovery never connects automatically.");
         servers.addActionListener(event -> {
-            if (!updating) {
-                selection.accept((DiscoveredServer) servers.getSelectedItem());
+            if (!updatingServerChoices) {
+                serverSelectionListener.accept((DiscoveredServer) servers.getSelectedItem());
             }
         });
         DocumentListener manualInput = new DocumentListener() {
-            private void changed() {
-                if (!updating && servers.getSelectedItem() != null) {
-                    selection.accept(null);
+            private void clearSelectionForManualInput() {
+                // Khi sửa host hoặc cổng bằng tay, bỏ lựa chọn cũ và giữ nội dung người dùng nhập.
+                if (!updatingServerChoices && servers.getSelectedItem() != null) {
+                    serverSelectionListener.accept(null);
                 }
             }
 
             @Override
             public void insertUpdate(DocumentEvent event) {
-                changed();
+                clearSelectionForManualInput();
             }
 
             @Override
             public void removeUpdate(DocumentEvent event) {
-                changed();
+                clearSelectionForManualInput();
             }
 
             @Override
             public void changedUpdate(DocumentEvent event) {
-                changed();
+                clearSelectionForManualInput();
             }
         };
         host.getDocument().addDocumentListener(manualInput);
@@ -114,48 +115,72 @@ public final class ConnectionPanel extends JPanel {
     }
 
     void onSelection(Consumer<DiscoveredServer> action) {
-        selection = Objects.requireNonNull(action);
+        serverSelectionListener = Objects.requireNonNull(action);
     }
 
-    void render(UiSnapshot value) {
+    void render(UiSnapshot snapshot) {
         ClientController.requireEdt();
-        boolean editable = !value.connected() && !value.busy() && !value.closing();
-        boolean searching = value.state() == UiState.DISCOVERING && value.busy() && !value.closing();
-        host.setEnabled(editable);
-        port.setEnabled(editable);
-        udpPort.setEnabled(editable);
-        connect.setEnabled(editable);
-        discover.setEnabled(editable);
+        boolean canChooseServer = !snapshot.connected() && !snapshot.busy() && !snapshot.closing();
+        // Lượt dò dùng UDP và chỉ bắt đầu khi chưa có kết nối TCP.
+        boolean searching = snapshot.state() == UiState.DISCOVERING && snapshot.busy() && !snapshot.closing();
+        host.setEnabled(canChooseServer);
+        port.setEnabled(canChooseServer);
+        udpPort.setEnabled(canChooseServer);
+        connect.setEnabled(canChooseServer);
+        discover.setEnabled(canChooseServer);
         cancelDiscovery.setEnabled(searching);
-        servers.setEnabled(editable && !value.discoveredServers().isEmpty());
-        disconnect.setEnabled(!value.closing() && value.state() != UiState.CONNECTING && !searching
-                && (value.connected() || value.busy()));
-        updating = true;
+        servers.setEnabled(canChooseServer && !snapshot.discoveredServers().isEmpty());
+        disconnect.setEnabled(!snapshot.closing() && snapshot.state() != UiState.CONNECTING && !searching
+                && (snapshot.connected() || snapshot.busy()));
+        renderServerChoices(snapshot);
+        renderStatus(snapshot, searching);
+    }
+
+    private void renderServerChoices(UiSnapshot snapshot) {
+        // Bỏ qua sự kiện phát sinh khi cập nhật danh sách hoặc tự điền host và cổng.
+        updatingServerChoices = true;
         try {
-            if (!displayed.equals(value.discoveredServers())) {
+            if (!displayedServers.equals(snapshot.discoveredServers())) {
                 DefaultComboBoxModel<DiscoveredServer> choices = new DefaultComboBoxModel<>();
                 choices.addElement(null);
-                value.discoveredServers().forEach(choices::addElement);
+                for (DiscoveredServer server : snapshot.discoveredServers()) {
+                    choices.addElement(server);
+                }
                 servers.setModel(choices);
-                displayed = value.discoveredServers();
+                displayedServers = snapshot.discoveredServers();
             }
-            servers.setSelectedItem(value.selectedServer());
-            if (value.selectedServer() != null && !Objects.equals(displayedSelection, value.selectedServer())) {
-                host.setText(value.selectedServer().host());
-                port.setText(Integer.toString(value.selectedServer().tcpPort()));
+            servers.setSelectedItem(snapshot.selectedServer());
+            DiscoveredServer selectedServer = snapshot.selectedServer();
+            if (selectedServer != null && !Objects.equals(displayedSelection, selectedServer)) {
+                host.setText(selectedServer.host());
+                port.setText(Integer.toString(selectedServer.tcpPort()));
             }
-            displayedSelection = value.selectedServer();
+            displayedSelection = selectedServer;
         } finally {
-            updating = false;
+            updatingServerChoices = false;
         }
-        status.setText(value.connected() ? "Connected" : value.state().toString());
-        status.setToolTipText("Operation: " + value.state());
-        status.setForeground(value.connected() || searching ? UiTheme.ACCENT
-                : value.state() == UiState.FAILED ? new Color(170, 45, 45) : UiTheme.MUTED);
-        searchStatus.setText(value.connected()
-                ? "Connected. Disconnect before discovering or selecting another server."
-                : searching ? "Searching ... You can cancel this search."
-                : value.discoveredServers().isEmpty() ? "Discover nearby servers or enter an IP and TCP port manually."
-                : value.discoveredServers().size() + " server(s) found. Choose one and click Connect, or enter an IP manually.");
+    }
+
+    private void renderStatus(UiSnapshot snapshot, boolean searching) {
+        status.setText(snapshot.connected() ? "Connected" : snapshot.state().toString());
+        status.setToolTipText("Operation: " + snapshot.state());
+        if (snapshot.connected() || searching) {
+            status.setForeground(UiTheme.ACCENT);
+        } else if (snapshot.state() == UiState.FAILED) {
+            status.setForeground(new Color(170, 45, 45));
+        } else {
+            status.setForeground(UiTheme.MUTED);
+        }
+
+        int serverCount = snapshot.discoveredServers().size();
+        if (snapshot.connected()) {
+            searchStatus.setText("Connected. Disconnect before discovering or selecting another server.");
+        } else if (searching) {
+            searchStatus.setText("Searching ... You can cancel this search.");
+        } else if (serverCount == 0) {
+            searchStatus.setText("Discover nearby servers or enter an IP and TCP port manually.");
+        } else {
+            searchStatus.setText(serverCount + " server(s) found. Choose one and click Connect, or enter an IP manually.");
+        }
     }
 }

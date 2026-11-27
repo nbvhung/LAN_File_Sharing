@@ -4,18 +4,20 @@ import java.awt.*;
 import javax.swing.*;
 import vn.edu.lanfileshare.common.model.Messages.FileInfo;
 
+/** Hiển thị file trên server và các thao tác với hàng được chọn. */
 public final class ServerFilePanel extends JPanel {
     final FileTableModel model = new FileTableModel();
     final JTable table = new JTable(model);
-    final JButton refresh = UiTheme.button("Refresh"), upload = UiTheme.button("Upload file"),
-            download = UiTheme.button("Download selected");
+    final JButton refresh = UiTheme.button("Refresh");
+    final JButton upload = UiTheme.button("Upload file");
+    final JButton download = UiTheme.button("Download selected");
     private final JLabel count = new JLabel("Connect to view completed server files.");
     private final JTextField detail = new JTextField("Select a file to inspect its SHA-256.");
-    private UiSnapshot latest;
+    private UiSnapshot latestSnapshot;
 
     public ServerFilePanel() {
         super(new BorderLayout(0, 10));
-        UiTheme.card(this, "Server files");
+        UiTheme.stylePanel(this);
         JPanel top = new JPanel(new BorderLayout());
         top.setOpaque(false);
         top.add(UiTheme.heading("Server files"), BorderLayout.WEST);
@@ -43,33 +45,43 @@ public final class ServerFilePanel extends JPanel {
         bottom.add(detail, BorderLayout.CENTER);
         add(bottom, BorderLayout.SOUTH);
         table.getSelectionModel().addListSelectionListener(event -> {
-            FileInfo file = selected();
+            FileInfo file = selectedFile();
             detail.setText(file == null ? "Select a file to inspect its SHA-256." : "SHA-256  " + file.sha256());
-            buttons();
+            updateButtons();
         });
         refresh.setName("refresh");
         upload.setName("upload");
         download.setName("download");
     }
 
-    public FileInfo selected() {
-        int row = table.getSelectedRow();
-        return row < 0 ? null : model.file(table.convertRowIndexToModel(row));
+    public FileInfo selectedFile() {
+        int viewRow = table.getSelectedRow();
+        if (viewRow < 0) {
+            return null;
+        }
+        // Hàng trên màn hình đổi vị trí khi sort, còn model giữ thứ tự dữ liệu ban đầu.
+        int modelRow = table.convertRowIndexToModel(viewRow);
+        return model.fileAt(modelRow);
     }
 
-    void render(UiSnapshot value) {
-        latest = value;
-        model.setRows(value.files());
-        count.setText(!value.connected() ? "Connect to view completed server files."
-                : value.files().isEmpty() ? "No files on this server."
-                        : value.files().size() + " completed file(s) available");
-        buttons();
+    void render(UiSnapshot snapshot) {
+        // Model có thể phát sự kiện chọn hàng ngay lúc đổi dữ liệu.
+        latestSnapshot = snapshot;
+        model.setRows(snapshot.files());
+        if (!snapshot.connected()) {
+            count.setText("Connect to view completed server files.");
+        } else if (snapshot.files().isEmpty()) {
+            count.setText("No files on this server.");
+        } else {
+            count.setText(snapshot.files().size() + " completed file(s) available");
+        }
+        updateButtons();
     }
 
-    private void buttons() {
-        boolean ready = latest != null && latest.connected() && !latest.busy() && !latest.closing();
+    private void updateButtons() {
+        boolean ready = latestSnapshot != null && latestSnapshot.connected() && !latestSnapshot.busy() && !latestSnapshot.closing();
         refresh.setEnabled(ready);
         upload.setEnabled(ready);
-        download.setEnabled(ready && selected() != null);
+        download.setEnabled(ready && selectedFile() != null);
     }
 }

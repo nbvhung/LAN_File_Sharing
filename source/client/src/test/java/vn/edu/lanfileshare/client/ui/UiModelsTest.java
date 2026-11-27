@@ -1,8 +1,11 @@
 package vn.edu.lanfileshare.client.ui;
 
+import java.awt.BorderLayout;
 import java.net.*;
 import java.nio.file.*;
 import java.util.*;
+import javax.swing.JProgressBar;
+import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -32,7 +35,7 @@ class UiModelsTest {
             assertTrue(files.upload.isEnabled());
             assertFalse(files.download.isEnabled());
             files.table.setRowSelectionInterval(0, 0);
-            assertEquals(file, files.selected());
+            assertEquals(file, files.selectedFile());
             assertTrue(files.download.isEnabled());
             TransferItem interrupted = new TransferItem(UUID.randomUUID(), UUID.randomUUID(), "report.txt",
                     Direction.UPLOAD, endpoint, Path.of("report.txt"), Path.of("checkpoint.json"), 512, 1024, 50, 100,
@@ -41,6 +44,12 @@ class UiModelsTest {
                     List.of(interrupted));
             transfers.render(resumable);
             assertTrue(transfers.resume.isEnabled());
+            JPanel progressArea = (JPanel) ((BorderLayout) transfers.getLayout())
+                    .getLayoutComponent(BorderLayout.SOUTH);
+            JProgressBar progress = (JProgressBar) ((BorderLayout) progressArea.getLayout())
+                    .getLayoutComponent(BorderLayout.CENTER);
+            assertEquals(5_000, progress.getValue());
+            assertEquals("50.0%", progress.getString());
             UiSnapshot busy = new UiSnapshot(UiState.RESUMING, true, true, false, endpoint, "", List.of(file),
                     List.of(interrupted));
             files.render(busy);
@@ -51,8 +60,7 @@ class UiModelsTest {
             assertFalse(files.download.isEnabled());
             assertFalse(transfers.resume.isEnabled());
             assertTrue(connection.disconnect.isEnabled());
-            TransferItem completed = interrupted.identity(interrupted.transferId(), interrupted.checkpoint(), 1024,
-                    UiState.COMPLETED, "Done");
+            TransferItem completed = interrupted.completed(interrupted.transferId(), 1024, "Done");
             transfers.render(new UiSnapshot(UiState.COMPLETED, true, false, false, endpoint, "", List.of(file),
                     List.of(completed)));
             assertFalse(transfers.resume.isEnabled());
@@ -62,13 +70,17 @@ class UiModelsTest {
     @Test
     void fileTableSortsNumericSizesAndKeepsIdsDistinct() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
-            FileTableModel model = new FileTableModel();
+            ServerFilePanel panel = new ServerFilePanel();
+            FileTableModel model = panel.model;
             var a = new FileInfo(UUID.randomUUID(), "same.txt", 20, "a".repeat(64));
             var b = new FileInfo(UUID.randomUUID(), "same.txt", 100, "b".repeat(64));
-            model.setRows(List.of(a, b));
+            model.setRows(List.of(b, a));
             assertEquals(Long.class, model.getColumnClass(1));
             assertNotEquals(model.getValueAt(0, 2), model.getValueAt(1, 2));
             assertFalse(model.isCellEditable(0, 0));
+            panel.table.getRowSorter().toggleSortOrder(1);
+            panel.table.setRowSelectionInterval(0, 0);
+            assertEquals(a.fileId(), panel.selectedFile().fileId());
         });
     }
 

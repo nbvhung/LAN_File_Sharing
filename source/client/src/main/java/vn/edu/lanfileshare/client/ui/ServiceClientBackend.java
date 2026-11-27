@@ -5,67 +5,88 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import vn.edu.lanfileshare.client.network.TcpClient;
-import vn.edu.lanfileshare.client.transfer.*;
-import vn.edu.lanfileshare.common.model.Messages.*;
+import vn.edu.lanfileshare.client.transfer.DownloadResult;
+import vn.edu.lanfileshare.client.transfer.DownloadService;
+import vn.edu.lanfileshare.client.transfer.ProgressListener;
+import vn.edu.lanfileshare.client.transfer.TransferProgress;
+import vn.edu.lanfileshare.client.transfer.TransferResult;
+import vn.edu.lanfileshare.client.transfer.UploadCheckpointStore;
+import vn.edu.lanfileshare.client.transfer.UploadService;
+import vn.edu.lanfileshare.common.model.Messages.Direction;
+import vn.edu.lanfileshare.common.model.Messages.FileInfo;
 
-/** Thin adapter to the existing Phase 1-5 services, with one sequential socket. */
+/** Dùng chung một kết nối TCP để lấy danh sách file, upload, download và resume. */
 public final class ServiceClientBackend implements ClientBackend {
-    private final TcpClient client;
-    private final UploadService uploads;
-    private final DownloadService downloads;
+    private final TcpClient tcpClient;
+    private final UploadService uploadService;
+    private final DownloadService downloadService;
 
     public ServiceClientBackend(Path checkpoints) {
         this(new TcpClient(), checkpoints);
     }
 
-    public ServiceClientBackend(TcpClient client, Path checkpoints) {
-        this.client = client;
-        uploads = new UploadService(client, UploadService.DEFAULT_MAX_FILE_BYTES,
+    public ServiceClientBackend(TcpClient tcpClient, Path checkpoints) {
+        this.tcpClient = tcpClient;
+        uploadService = new UploadService(tcpClient, UploadService.DEFAULT_MAX_FILE_BYTES,
                 new UploadCheckpointStore(checkpoints));
-        downloads = new DownloadService(client);
+        downloadService = new DownloadService(tcpClient);
     }
 
+    @Override
     public void connect(Endpoint endpoint) throws IOException {
-        client.disconnect();
-        client.connect(endpoint.host(), endpoint.port());
+        // Đóng phiên cũ trước khi dùng cùng TcpClient để mở phiên mới.
+        tcpClient.disconnect();
+        tcpClient.connect(endpoint.host(), endpoint.port());
     }
 
+    @Override
     public void disconnect() throws IOException {
-        client.disconnect();
+        tcpClient.disconnect();
     }
 
+    @Override
     public boolean connected() {
-        return client.isConnected();
+        return tcpClient.isConnected();
     }
 
+    @Override
     public List<FileInfo> listFiles() throws IOException {
-        return client.listFiles().files();
+        return tcpClient.listFiles().files();
     }
 
+    @Override
     public Outcome upload(Path source, ProgressListener<TransferProgress> listener) throws IOException {
-        TransferResult result = uploads.uploadFile(source, listener::onProgress);
+        TransferResult result = uploadService.uploadFile(source, listener::onProgress);
         return new Outcome(result.transferId(), result.file(), source);
     }
 
-    public Outcome download(UUID id, Path target, ProgressListener<TransferProgress> listener) throws IOException {
-        DownloadResult result = downloads.downloadFile(id, target, listener::onProgress);
+    @Override
+    public Outcome download(UUID fileId, Path destination, ProgressListener<TransferProgress> listener) throws IOException {
+        DownloadResult result = downloadService.downloadFile(fileId, destination, listener::onProgress);
         return new Outcome(result.transferId(), result.file(), result.destination());
     }
 
+    @Override
     public Outcome resume(TransferItem item, ProgressListener<TransferProgress> listener) throws IOException {
+        // Hai hướng đều tra phiên bằng transfer ID. Download dùng checkpoint để tìm file tải dở.
         if (item.direction() == Direction.UPLOAD) {
-            var result = uploads.resumeUpload(item.transferId(), item.localPath(), listener::onProgress).result();
+            TransferResult result = uploadService.resumeUpload(item.transferId(), item.localPath(), listener::onProgress)
+                    .result();
             return new Outcome(result.transferId(), result.file(), item.localPath());
         }
-        var result = downloads.resumeDownload(item.transferId(), item.checkpoint(), listener::onProgress).result();
+        DownloadResult result = downloadService.resumeDownload(item.transferId(), item.checkpoint(), listener::onProgress)
+                .result();
         return new Outcome(result.transferId(), result.file(), result.destination());
     }
 
+    @Override
     public void interrupt() throws IOException {
-        client.interruptConnection();
+        // Đóng socket để worker thoát khỏi I/O đang chờ và lưu được checkpoint.
+        tcpClient.interruptConnection();
     }
 
+    @Override
     public void close() throws IOException {
-        client.close();
+        tcpClient.close();
     }
 }
