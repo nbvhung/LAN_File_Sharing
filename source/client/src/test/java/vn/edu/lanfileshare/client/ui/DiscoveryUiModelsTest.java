@@ -61,10 +61,9 @@ class DiscoveryUiModelsTest {
         Endpoint original = new Endpoint("127.0.0.1", 49000);
         TransferItem before = new TransferItem(UUID.randomUUID(), null, "file", Direction.UPLOAD, original,
                 Path.of("source"), null, 100, 1000, 10, 500, UiState.UPLOADING, "");
-        TransferItem saved = before.identity(UUID.randomUUID(), Path.of("checkpoint"), 400,
-                UiState.INTERRUPTED, "Saved");
-        assertEquals(400, saved.bytes()); assertEquals(40, saved.percentage());
-        assertEquals(0, saved.bytesPerSecond()); assertTrue(saved.resumable());
+        TransferItem saved = before.interruptedAt(UUID.randomUUID(), Path.of("checkpoint"), 400, "Saved");
+        assertEquals(400, saved.transferredBytes()); assertEquals(40, saved.percentage());
+        assertEquals(0, saved.bytesPerSecond()); assertTrue(saved.canResume());
         SwingUtilities.invokeAndWait(() -> {
             TransferPanel panel = new TransferPanel();
             panel.render(new UiSnapshot(UiState.CONNECTED, true, false, false,

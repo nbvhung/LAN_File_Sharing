@@ -5,53 +5,56 @@ import java.net.SocketException;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import vn.edu.lanfileshare.client.discovery.BroadcastTargets;
 import vn.edu.lanfileshare.client.discovery.DiscoveredServer;
 import vn.edu.lanfileshare.client.discovery.DiscoveryClient;
 import vn.edu.lanfileshare.client.discovery.DiscoveryTarget;
 
-/** Owns only the current search, so Cancel can close UDP without touching TCP. */
+/** Chọn đích UDP và giữ lượt tìm đang chạy để nút Cancel có thể dừng đúng lượt. */
 public final class ServiceServerDiscovery implements ServerDiscovery {
     @FunctionalInterface
     public interface Targets {
         List<DiscoveryTarget> forPort(int udpPort) throws IOException;
     }
 
-    private final Supplier<DiscoveryClient> clients;
-    private final Targets targets;
-    private final Object lifecycle = new Object();
-    private DiscoveryClient current;
+    private final Supplier<DiscoveryClient> clientFactory;
+    private final Targets targetsForPort;
+    private final Object searchLock = new Object();
+    private DiscoveryClient activeSearch;
     private boolean closed;
 
     public ServiceServerDiscovery() {
-        this(DiscoveryClient::new, vn.edu.lanfileshare.client.discovery.BroadcastTargets::forPort);
+        this(DiscoveryClient::new, BroadcastTargets::forPort);
     }
 
-    /** Explicit targets allow real localhost tests without replacing the UDP protocol/service. */
-    public ServiceServerDiscovery(Supplier<DiscoveryClient> clients, Targets targets) {
-        this.clients = Objects.requireNonNull(clients);
-        this.targets = Objects.requireNonNull(targets);
+    /** Test có thể chỉ định đích localhost và vẫn dùng dịch vụ UDP thật. */
+    public ServiceServerDiscovery(Supplier<DiscoveryClient> clientFactory, Targets targetsForPort) {
+        this.clientFactory = Objects.requireNonNull(clientFactory);
+        this.targetsForPort = Objects.requireNonNull(targetsForPort);
     }
 
     @Override
     public List<DiscoveredServer> discover(int udpPort) throws IOException {
-        ClientController.requireWorker();
+        ClientController.requireOffEdt();
         DiscoveryClient search;
-        synchronized (lifecycle) {
+        // Khóa bảo vệ lượt tìm hiện tại và trạng thái đóng khi worker và luồng điều khiển cùng truy cập.
+        synchronized (searchLock) {
             if (closed) {
                 throw new SocketException("Desktop discovery is closed");
             }
-            if (current != null) {
+            if (activeSearch != null) {
                 throw new IllegalStateException("Discovery already active");
             }
-            search = clients.get();
-            current = search;
+            search = clientFactory.get();
+            activeSearch = search;
         }
+        // Nhả khóa trước khi chờ UDP để luồng điều khiển còn gọi được cancel().
         try (search) {
-            return search.discover(targets.forPort(udpPort));
+            return search.discover(targetsForPort.forPort(udpPort));
         } finally {
-            synchronized (lifecycle) {
-                if (current == search) {
-                    current = null;
+            synchronized (searchLock) {
+                if (activeSearch == search) {
+                    activeSearch = null;
                 }
             }
         }
@@ -59,16 +62,17 @@ public final class ServiceServerDiscovery implements ServerDiscovery {
 
     @Override
     public void cancel() {
-        synchronized (lifecycle) {
-            if (current != null) {
-                current.close();
+        // Đóng các socket của lượt tìm UDP đang chạy để thoát khỏi thao tác nhận gói tin.
+        synchronized (searchLock) {
+            if (activeSearch != null) {
+                activeSearch.close();
             }
         }
     }
 
     @Override
     public void close() {
-        synchronized (lifecycle) {
+        synchronized (searchLock) {
             closed = true;
             cancel();
         }

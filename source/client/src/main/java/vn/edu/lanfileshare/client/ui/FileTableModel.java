@@ -5,6 +5,9 @@ import javax.swing.table.AbstractTableModel;
 import vn.edu.lanfileshare.common.model.Messages.FileInfo;
 
 public final class FileTableModel extends AbstractTableModel {
+    private static final String[] COLUMN_NAMES = { "File name", "Size (bytes)", "File ID" };
+    private static final int SIZE_COLUMN = 1;
+
     private List<FileInfo> rows = List.of();
 
     public void setRows(List<FileInfo> files) {
@@ -15,35 +18,42 @@ public final class FileTableModel extends AbstractTableModel {
         }
     }
 
-    public FileInfo file(int row) {
-        return rows.get(row);
+    public FileInfo fileAt(int modelRow) {
+        return rows.get(modelRow);
     }
 
+    @Override
     public int getRowCount() {
         return rows.size();
     }
 
+    @Override
     public int getColumnCount() {
-        return 3;
+        return COLUMN_NAMES.length;
     }
 
+    @Override
     public String getColumnName(int column) {
-        return new String[] { "File name", "Size (bytes)", "File ID" }[column];
+        return COLUMN_NAMES[column];
     }
 
+    @Override
     public Class<?> getColumnClass(int column) {
-        return column == 1 ? Long.class : String.class;
+        // JTable dùng kiểu Long để sắp xếp theo kích thước thực.
+        return column == SIZE_COLUMN ? Long.class : String.class;
     }
 
+    @Override
     public Object getValueAt(int row, int column) {
-        FileInfo file = rows.get(row);
+        FileInfo file = fileAt(row);
         return switch (column) {
         case 0 -> file.name();
-        case 1 -> file.size();
+        case SIZE_COLUMN -> file.size();
         default -> file.fileId().toString();
         };
     }
 
+    @Override
     public boolean isCellEditable(int row, int col) {
         return false;
     }

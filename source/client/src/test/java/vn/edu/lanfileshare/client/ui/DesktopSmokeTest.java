@@ -123,6 +123,7 @@ class DesktopSmokeTest {
                 }
             };
             Toolkit.getDefaultToolkit().addAWTEventListener(dialogs, AWTEvent.WINDOW_EVENT_MASK);
+            AtomicReference<MainFrame> secondClient = new AtomicReference<>();
             try {
                 SwingUtilities.invokeAndWait(() -> {
                     assertEquals("LAN File Sharing", frame.getTitle());
@@ -145,9 +146,22 @@ class DesktopSmokeTest {
                     find(frame, "connect", JButton.class).doClick(0);
                 });
                 assertTrue(await(frame, s -> s.connected() && !s.busy()).files().isEmpty());
+                SwingUtilities.invokeAndWait(() -> {
+                    MainFrame second = new MainFrame(new ServiceClientBackend(root.resolve("client-2")),
+                            "127.0.0.1", server.port());
+                    secondClient.set(second);
+                    second.setVisible(true);
+                    find(second, "connect", JButton.class).doClick(0);
+                });
+                MainFrame second = secondClient.get();
+                assertTrue(await(second, s -> s.connected() && !s.busy()).files().isEmpty());
+                assertEquals(2, server.statistics().activeConnections());
                 SwingUtilities.invokeLater(() -> find(frame, "upload", JButton.class).doClick(0));
                 UiSnapshot uploaded = await(frame, s -> !s.busy() && s.state() == UiState.COMPLETED);
                 assertEquals(1, uploaded.files().size());
+                SwingUtilities.invokeAndWait(() -> find(second, "refresh", JButton.class).doClick(0));
+                UiSnapshot refreshed = await(second, s -> !s.busy() && s.files().size() == 1);
+                assertEquals(uploaded.files().getFirst().fileId(), refreshed.files().getFirst().fileId());
                 SwingUtilities.invokeLater(() -> {
                     find(frame, "workspaceTabs", JTabbedPane.class).setSelectedIndex(0);
                     find(frame, "serverFiles", JTable.class).setRowSelectionInterval(0, 0);
@@ -190,10 +204,22 @@ class DesktopSmokeTest {
                 frame.controller().termination().get(3, TimeUnit.SECONDS);
                 assertFalse(frame.isDisplayable());
                 System.out.println(
-                        "SWING_DESKTOP_PASS display=true discoverySelection=true uploadDownloadBytes=1048576 byteForByte=true screenshot=target/swing-client-complete.png");
+                        "SWING_DESKTOP_PASS display=true discoverySelection=true concurrentClients=2 "
+                                + "secondClientRefresh=true uploadDownloadBytes=1048576 byteForByte=true "
+                                + "screenshot=target/swing-client-complete.png");
             } finally {
                 Toolkit.getDefaultToolkit().removeAWTEventListener(dialogs);
-                SwingUtilities.invokeAndWait(() -> frame.controller().close());
+                MainFrame second = secondClient.get();
+                SwingUtilities.invokeAndWait(() -> {
+                    frame.controller().close();
+                    if (second != null) {
+                        second.controller().close();
+                    }
+                });
+                if (second != null) {
+                    second.controller().termination().get(5, TimeUnit.SECONDS);
+                    assertFalse(second.isDisplayable());
+                }
                 frame.controller().termination().get(5, TimeUnit.SECONDS);
             }
         }
